@@ -9,6 +9,51 @@ Search through your OpenCode conversation history across ALL projects or within 
 
 <video src="https://github.com/user-attachments/assets/f492da67-3f54-4989-abb3-2d40c3a8fe7c" autoplay loop muted playsinline width="100%"></video>
 
+## About this fork
+
+This is the `v2-port` branch of
+[chriscool/opencode-history-search](https://github.com/chriscool/opencode-history-search),
+a fork of [joeyism/opencode-history-search](https://github.com/joeyism/opencode-history-search)
+that makes the plugin work with OpenCode 2.
+
+Upstream (1.5.1) has two problems on OpenCode 2:
+
+1. **It does not load.** OpenCode 2 rejects its entrypoint with "Plugin must
+   export a default definition with an id and an effect or setup function".
+2. **It searches the wrong tables.** It reads OpenCode v1's `session`,
+   `message` and `part` tables. OpenCode 2 copies those into its own
+   `session_v2`, `session_message` and `session_part` tables the first time it
+   starts, and never writes the v1 tables again. So even once the plugin loads,
+   it only finds history from before the upgrade.
+
+The open upstream pull requests for OpenCode 2,
+[#17](https://github.com/joeyism/opencode-history-search/pull/17),
+[#19](https://github.com/joeyism/opencode-history-search/pull/19) and
+[#23](https://github.com/joeyism/opencode-history-search/pull/23), fix the
+first problem but not the second: their queries still read the v1 tables.
+Tested on real history with #23 loaded in OpenCode 2.3.0, keyword, multi-term
+and file-trace searches all found nothing from after the upgrade, while finding
+older sessions.
+
+This branch fixes both, and also:
+
+- reads assistant replies and tool calls from `session_part`, user prompts
+  from `session_message`, and modified files from `snapshot.files`, as well as
+  content stored inline by early 2.x releases;
+- keeps v1 history searchable, because OpenCode 2 migrates it (see
+  [Sessions from OpenCode v1](#sessions-from-opencode-v1));
+- installs into OpenCode 2's `plugins/` directory, as OpenCode 2 no longer
+  loads custom tools from `tool/` directories;
+- applies the date filter before the result limit, so date-filtered searches no
+  longer come back empty when the newest matches are outside the range.
+
+It does not support OpenCode v1, and it reads OpenCode's internal database
+tables, which an OpenCode release could change.
+
+These changes are not published on npm: the `opencode-history-search` package
+there is upstream's, which does not work on OpenCode 2. Until they are released,
+install [from a local clone](#from-a-local-clone) of this branch.
+
 ## Features
 
 - **Keyword Search** - Find exact matches in your conversation history
@@ -69,7 +114,7 @@ automatically.
 ### From a Local Clone
 
 ```bash
-git clone https://github.com/joeyism/opencode-history-search.git
+git clone -b v2-port https://github.com/chriscool/opencode-history-search.git
 cd opencode-history-search
 bun install
 bun run build

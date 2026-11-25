@@ -1,5 +1,11 @@
 # Installation Guide
 
+> **This fork:** the OpenCode 2 changes on the `v2-port` branch are not on npm
+> yet; the npm package and `npx opencode-history-search` install upstream's
+> version, which does not work on OpenCode 2. Use
+> [3. From a Local Clone](#3-from-a-local-clone) until they are released. See
+> "About this fork" in the README.
+
 opencode-history-search is an OpenCode 2 plugin. Install it with **one** of the
 methods below; using more than one registers the tool twice. OpenCode reloads
 plugins when their config or files change, so there is no need to restart it.
@@ -46,7 +52,7 @@ so nothing else needs installing.
 ## 3. From a Local Clone
 
 ```bash
-git clone https://github.com/joeyism/opencode-history-search.git
+git clone -b v2-port https://github.com/chriscool/opencode-history-search.git
 cd opencode-history-search
 bun install
 bun run build
