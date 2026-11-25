@@ -200,23 +200,25 @@ export function traceFileSqlite(
     LIMIT 1
   `);
 
-  const results: FileTraceResult[] = deduped.map((c, idx) => {
-    const promptRow = findUserPrompt.get(c.sessionID, c.timestamp) as { text: string } | undefined;
-    return {
-      sessionID: c.sessionID,
-      sessionTitle: c.sessionTitle,
-      timestamp: c.timestamp,
-      firstTouch: idx === earliestIndex,
-      userPrompt: promptRow ? promptRow.text : null,
-      toolName: c.toolName,
-      filePath: c.filePath,
-    };
-  });
-
+  // firstTouch is decided over every touch above; the date range and the
+  // limit then pick the results, and only those get a prompt lookup.
   const limit = options?.limit ?? 50;
-  return results
-    .filter((result) => inDateRange(result.timestamp, options?.dateRange))
-    .slice(0, limit);
+  return deduped
+    .map((c, idx) => ({ ...c, firstTouch: idx === earliestIndex }))
+    .filter((c) => inDateRange(c.timestamp, options?.dateRange))
+    .slice(0, limit)
+    .map((c): FileTraceResult => {
+      const promptRow = findUserPrompt.get(c.sessionID, c.timestamp) as { text: string } | undefined;
+      return {
+        sessionID: c.sessionID,
+        sessionTitle: c.sessionTitle,
+        timestamp: c.timestamp,
+        firstTouch: c.firstTouch,
+        userPrompt: promptRow ? promptRow.text : null,
+        toolName: c.toolName,
+        filePath: c.filePath,
+      };
+    });
 }
 
 /** Strips the session directory, so absolute tool paths compare like the relative `snapshot.files`. */

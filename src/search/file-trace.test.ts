@@ -216,6 +216,27 @@ describe("file-trace search", () => {
       expect(results[0]?.firstTouch).toBe(false);
     });
 
+    test("looks up user prompts only for the results it returns", () => {
+      // Counts executions of the prompt lookup, the only query on user messages.
+      let lookups = 0;
+      const counting = {
+        query: (sql: string) => {
+          const statement = db.query(sql);
+          if (!sql.includes("type = 'user'")) return statement;
+          return { get: (...args: unknown[]) => (lookups++, statement.get(...(args as []))) };
+        },
+      } as unknown as Database;
+
+      const results = traceFileSqlite(counting, "proj_main", "src/auth.ts", { limit: 1 });
+      expect(results.map((r) => r.userPrompt)).toEqual(["specifically in auth.ts"]);
+      expect(lookups).toBe(1);
+
+      lookups = 0;
+      const dateRange = { start: new Date(1774346400000), end: new Date(1774346409999) };
+      expect(traceFileSqlite(counting, "proj_main", "src/auth.ts", { dateRange })).toHaveLength(1);
+      expect(lookups).toBe(1);
+    });
+
     test("respects the limit parameter", () => {
       const results = traceFileSqlite(db, "proj_main", "auth.ts", { limit: 2 });
       expect(results).toHaveLength(2);

@@ -1899,20 +1899,19 @@ function traceFileSqlite(db, projectID, queryPath, options) {
     ORDER BY time_created DESC
     LIMIT 1
   `);
-  const results = deduped.map((c, idx) => {
+  const limit = options?.limit ?? 50;
+  return deduped.map((c, idx) => ({ ...c, firstTouch: idx === earliestIndex })).filter((c) => inDateRange(c.timestamp, options?.dateRange)).slice(0, limit).map((c) => {
     const promptRow = findUserPrompt.get(c.sessionID, c.timestamp);
     return {
       sessionID: c.sessionID,
       sessionTitle: c.sessionTitle,
       timestamp: c.timestamp,
-      firstTouch: idx === earliestIndex,
+      firstTouch: c.firstTouch,
       userPrompt: promptRow ? promptRow.text : null,
       toolName: c.toolName,
       filePath: c.filePath
     };
   });
-  const limit = options?.limit ?? 50;
-  return results.filter((result) => inDateRange(result.timestamp, options?.dateRange)).slice(0, limit);
 }
 function relativeTo(directory, filePath) {
   const normalized = filePath.replace(/\\/g, "/");
