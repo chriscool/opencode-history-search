@@ -1,7 +1,10 @@
 import type { Database } from "bun:sqlite";
+import type { DateRange } from "./date-filter";
 
 export interface MultitermSqlOptions {
   limit: number;
+  /** Keeps sessions last updated in this range; applied before the limit. */
+  dateRange?: DateRange;
 }
 
 export interface MultitermSqlResult {
@@ -67,6 +70,7 @@ export function buildMultitermSql(
     .join(" AND ");
 
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
+  const dateFilter = options.dateRange ? "AND s.time_updated BETWEEN ? AND ?" : "";
 
   const sql = `
     WITH ${DOCUMENTS}
@@ -75,6 +79,7 @@ export function buildMultitermSql(
     JOIN doc d ON d.session_id = s.id
     WHERE 1=1
       ${projectFilter}
+      ${dateFilter}
     GROUP BY s.id
     HAVING ${having}
     ORDER BY s.time_updated DESC
@@ -90,6 +95,9 @@ export function buildMultitermSql(
   if (projectID !== null) {
     binds.push(projectID);
   }
+  if (options.dateRange) {
+    binds.push(options.dateRange.start.getTime(), options.dateRange.end.getTime());
+  }
 
   return { sql, binds };
 }
@@ -98,10 +106,11 @@ export function searchMultitermSqlite(
   db: Database,
   projectID: string | null,
   terms: string[],
-  options?: { limit?: number },
+  options?: { limit?: number; dateRange?: DateRange },
 ): MultitermSearchMatch[] {
   const { sql, binds } = buildMultitermSql(terms, projectID, {
     limit: options?.limit ?? 50,
+    dateRange: options?.dateRange,
   });
 
   type Row = {
@@ -171,7 +180,7 @@ export function searchMultitermSqlite(
 export async function searchMultiterm(
   projectID: string | null,
   terms: string[],
-  options?: { limit?: number },
+  options?: { limit?: number; dateRange?: DateRange },
 ): Promise<MultitermSearchMatch[]> {
   const { Database } = await import("bun:sqlite");
   const { getDbPath } = await import("../storage-sqlite");

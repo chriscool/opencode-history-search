@@ -51,6 +51,16 @@ describe("fuzzy search (unit tests with mocks)", () => {
     expect(results.length).toBeGreaterThan(0);
   });
 
+  test("applies the date range before the limit", async () => {
+    // The best "storage" match is in ses_001's reply, one second after its
+    // title and first message; only those earlier two are in range.
+    const dateRange = { start: new Date(1706745600000), end: new Date(1706745600999) };
+    const results = await searchFuzzy(MOCK_PROJECT_ID, "storage", { threshold: 0.4, limit: 1, dateRange });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.timestamp).toBe(1706745600000);
+  });
+
   test("respects limit parameter", async () => {
     const results = await searchFuzzy(MOCK_PROJECT_ID, "storage", {
       threshold: 0.4,

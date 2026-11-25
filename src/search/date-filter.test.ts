@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseDateFilter, filterByDate, type DateRange } from "./date-filter";
+import { parseDateFilter, filterByDate, inDateRange, type DateRange } from "./date-filter";
 
 describe("parseDateFilter", () => {
   test("parses 'today' to current day range", () => {
@@ -228,5 +228,23 @@ describe("filterByDate", () => {
 
     const filtered = filterByDate([], range);
     expect(filtered.length).toBe(0);
+  });
+});
+
+describe("inDateRange", () => {
+  const range: DateRange = { start: new Date(1000), end: new Date(2000) };
+
+  test("includes both ends of the range", () => {
+    expect(inDateRange(1000, range)).toBe(true);
+    expect(inDateRange(2000, range)).toBe(true);
+  });
+
+  test("excludes timestamps outside the range", () => {
+    expect(inDateRange(999, range)).toBe(false);
+    expect(inDateRange(2001, range)).toBe(false);
+  });
+
+  test("accepts everything without a range", () => {
+    expect(inDateRange(0, undefined)).toBe(true);
   });
 });

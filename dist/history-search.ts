@@ -182,6 +182,83 @@ async function* listParts(messageID) {
     yield* listPartsSqlite(messageID);
 }
 
+// src/search/date-filter.ts
+function parseDateFilter(filter) {
+  const normalized = filter.trim().toLowerCase();
+  if (normalized === "today") {
+    const start = new Date;
+    start.setHours(0, 0, 0, 0);
+    const end = new Date;
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  }
+  if (normalized === "yesterday") {
+    const start = new Date;
+    start.setDate(start.getDate() - 1);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setHours(23, 59, 59, 999);
+    return { start, end };
+  }
+  const relativeMatch = normalized.match(/^last (\d+) (day|week|month)s?$/);
+  if (relativeMatch && relativeMatch[1] && relativeMatch[2]) {
+    const count = parseInt(relativeMatch[1], 10);
+    const unit = relativeMatch[2];
+    const end = new Date;
+    const start = new Date;
+    if (unit === "day") {
+      start.setDate(start.getDate() - count);
+    } else if (unit === "week") {
+      start.setDate(start.getDate() - count * 7);
+    } else if (unit === "month") {
+      start.setMonth(start.getMonth() - count);
+    }
+    start.setHours(0, 0, 0, 0);
+    return { start, end };
+  }
+  const rangeMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})$/);
+  if (rangeMatch && rangeMatch[1] && rangeMatch[2]) {
+    const start = new Date(rangeMatch[1]);
+    const end = new Date(rangeMatch[2]);
+    end.setHours(23, 59, 59, 999);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      throw new Error(`Invalid date range: ${filter}`);
+    }
+    if (start > end) {
+      throw new Error(`Start date must be before end date: ${filter}`);
+    }
+    return { start, end };
+  }
+  const isoMatch = normalized.match(/^(\d{4}-\d{2}(?:-\d{2})?)$/);
+  if (isoMatch && isoMatch[1]) {
+    const dateStr = isoMatch[1];
+    if (dateStr.match(/^\d{4}-\d{2}$/)) {
+      const start2 = new Date(`${dateStr}-01`);
+      const end2 = new Date(start2);
+      end2.setMonth(end2.getMonth() + 1);
+      end2.setDate(0);
+      end2.setHours(23, 59, 59, 999);
+      if (isNaN(start2.getTime())) {
+        throw new Error(`Invalid date: ${filter}`);
+      }
+      return { start: start2, end: end2 };
+    }
+    const start = new Date(dateStr);
+    const end = new Date(dateStr);
+    end.setHours(23, 59, 59, 999);
+    if (isNaN(start.getTime())) {
+      throw new Error(`Invalid date: ${filter}`);
+    }
+    return { start, end };
+  }
+  throw new Error(`Unrecognized date filter format: ${filter}. Supported formats: "today", "yesterday", "last N days/weeks/months", "YYYY-MM-DD", "YYYY-MM", "YYYY-MM-DD to YYYY-MM-DD"`);
+}
+function inDateRange(timestamp, dateRange) {
+  if (!dateRange)
+    return true;
+  return timestamp >= dateRange.start.getTime() && timestamp <= dateRange.end.getTime();
+}
+
 // src/search/keyword.ts
 async function searchKeyword(projectID, query, options = {}) {
   const results = [];
@@ -190,7 +267,7 @@ async function searchKeyword(projectID, query, options = {}) {
   for await (const session of listSessions(projectID)) {
     if (results.length >= limit)
       break;
-    if (pattern.test(session.title)) {
+    if (inDateRange(session.time.updated, options.dateRange) && pattern.test(session.title)) {
       results.push({
         sessionID: session.id,
         sessionTitle: session.title,
@@ -206,6 +283,8 @@ async function searchKeyword(projectID, query, options = {}) {
     for await (const message of listMessages(session.id, options.role)) {
       if (results.length >= limit)
         break;
+      if (!inDateRange(message.time.created, options.dateRange))
+        continue;
       for await (const part of listParts(message.id)) {
         if (results.length >= limit)
           break;
@@ -1668,7 +1747,7 @@ async function searchFuzzy(projectID, query, options = {}) {
   } catch {
     return [];
   }
-  const fuse = new Fuse(items, {
+  const fuse = new Fuse(items.filter((item) => inDateRange(item.timestamp, options.dateRange)), {
     keys: ["content"],
     threshold,
     includeScore: true,
@@ -1698,84 +1777,6 @@ async function searchFuzzy(projectID, query, options = {}) {
       projectDirectory: result.item.session.directory
     };
   }).sort((a, b) => b.timestamp - a.timestamp);
-}
-
-// src/search/date-filter.ts
-function parseDateFilter(filter) {
-  const normalized = filter.trim().toLowerCase();
-  if (normalized === "today") {
-    const start = new Date;
-    start.setHours(0, 0, 0, 0);
-    const end = new Date;
-    end.setHours(23, 59, 59, 999);
-    return { start, end };
-  }
-  if (normalized === "yesterday") {
-    const start = new Date;
-    start.setDate(start.getDate() - 1);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setHours(23, 59, 59, 999);
-    return { start, end };
-  }
-  const relativeMatch = normalized.match(/^last (\d+) (day|week|month)s?$/);
-  if (relativeMatch && relativeMatch[1] && relativeMatch[2]) {
-    const count = parseInt(relativeMatch[1], 10);
-    const unit = relativeMatch[2];
-    const end = new Date;
-    const start = new Date;
-    if (unit === "day") {
-      start.setDate(start.getDate() - count);
-    } else if (unit === "week") {
-      start.setDate(start.getDate() - count * 7);
-    } else if (unit === "month") {
-      start.setMonth(start.getMonth() - count);
-    }
-    start.setHours(0, 0, 0, 0);
-    return { start, end };
-  }
-  const rangeMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})$/);
-  if (rangeMatch && rangeMatch[1] && rangeMatch[2]) {
-    const start = new Date(rangeMatch[1]);
-    const end = new Date(rangeMatch[2]);
-    end.setHours(23, 59, 59, 999);
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
-      throw new Error(`Invalid date range: ${filter}`);
-    }
-    if (start > end) {
-      throw new Error(`Start date must be before end date: ${filter}`);
-    }
-    return { start, end };
-  }
-  const isoMatch = normalized.match(/^(\d{4}-\d{2}(?:-\d{2})?)$/);
-  if (isoMatch && isoMatch[1]) {
-    const dateStr = isoMatch[1];
-    if (dateStr.match(/^\d{4}-\d{2}$/)) {
-      const start2 = new Date(`${dateStr}-01`);
-      const end2 = new Date(start2);
-      end2.setMonth(end2.getMonth() + 1);
-      end2.setDate(0);
-      end2.setHours(23, 59, 59, 999);
-      if (isNaN(start2.getTime())) {
-        throw new Error(`Invalid date: ${filter}`);
-      }
-      return { start: start2, end: end2 };
-    }
-    const start = new Date(dateStr);
-    const end = new Date(dateStr);
-    end.setHours(23, 59, 59, 999);
-    if (isNaN(start.getTime())) {
-      throw new Error(`Invalid date: ${filter}`);
-    }
-    return { start, end };
-  }
-  throw new Error(`Unrecognized date filter format: ${filter}. Supported formats: "today", "yesterday", "last N days/weeks/months", "YYYY-MM-DD", "YYYY-MM", "YYYY-MM-DD to YYYY-MM-DD"`);
-}
-function filterByDate(results, dateRange) {
-  return results.filter((result) => {
-    const timestamp = new Date(result.timestamp);
-    return timestamp >= dateRange.start && timestamp <= dateRange.end;
-  });
 }
 
 // src/search/file-trace.ts
@@ -1915,7 +1916,7 @@ function traceFileSqlite(db, projectID, queryPath, options) {
     };
   });
   const limit = options?.limit ?? 50;
-  return results.slice(0, limit);
+  return results.filter((result) => inDateRange(result.timestamp, options?.dateRange)).slice(0, limit);
 }
 function relativeTo(directory, filePath) {
   const normalized = filePath.replace(/\\/g, "/");
@@ -1968,6 +1969,7 @@ function buildMultitermSql(terms, projectID, options) {
   const conditions = terms.map((_, i) => `MAX(CASE WHEN d.data LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`).join(", ");
   const having = terms.map((_, i) => `match_${i} = 1`).join(" AND ");
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
+  const dateFilter = options.dateRange ? "AND s.time_updated BETWEEN ? AND ?" : "";
   const sql = `
     WITH ${DOCUMENTS}
     SELECT s.id AS session_id, COALESCE(s.title, '') AS title, s.directory, s.time_updated, ${conditions}
@@ -1975,6 +1977,7 @@ function buildMultitermSql(terms, projectID, options) {
     JOIN doc d ON d.session_id = s.id
     WHERE 1=1
       ${projectFilter}
+      ${dateFilter}
     GROUP BY s.id
     HAVING ${having}
     ORDER BY s.time_updated DESC
@@ -1989,11 +1992,15 @@ function buildMultitermSql(terms, projectID, options) {
   if (projectID !== null) {
     binds.push(projectID);
   }
+  if (options.dateRange) {
+    binds.push(options.dateRange.start.getTime(), options.dateRange.end.getTime());
+  }
   return { sql, binds };
 }
 function searchMultitermSqlite(db, projectID, terms, options) {
   const { sql, binds } = buildMultitermSql(terms, projectID, {
-    limit: options?.limit ?? 50
+    limit: options?.limit ?? 50,
+    dateRange: options?.dateRange
   });
   const rows = db.query(sql).all(...binds);
   if (rows.length === 0) {
@@ -2210,14 +2217,12 @@ async function runSearch(args, currentProjectID) {
       throw new Error("'terms' must be a non-empty array of strings.");
     }
     if (args.terms.length > 1) {
-      const matches2 = await searchMultiterm(projectID, args.terms, { limit: args.limit });
-      return formatMultitermResults(dateRange ? filterByDate(matches2, dateRange) : matches2);
+      return formatMultitermResults(await searchMultiterm(projectID, args.terms, { limit: args.limit, dateRange }));
     }
     query = args.terms[0];
   }
   if (args.filePath) {
-    const matches2 = await traceFile(projectID, args.filePath, { limit: args.limit });
-    return formatTraceResults(dateRange ? filterByDate(matches2, dateRange) : matches2);
+    return formatTraceResults(await traceFile(projectID, args.filePath, { limit: args.limit, dateRange }));
   }
   if (!query) {
     throw new Error("'query' is required when 'filePath' is not provided.");
@@ -2225,14 +2230,16 @@ async function runSearch(args, currentProjectID) {
   const matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, query, {
     threshold: args.fuzzyThreshold,
     limit: args.limit,
-    role: args.role
+    role: args.role,
+    dateRange
   }) : await searchKeyword(projectID, query, {
     regex: args.regex,
     caseSensitive: args.caseSensitive,
     limit: args.limit,
-    role: args.role
+    role: args.role,
+    dateRange
   });
-  return formatResults(dateRange ? filterByDate(matches, dateRange) : matches);
+  return formatResults(matches);
 }
 var plugin = {
   id: PLUGIN_ID,

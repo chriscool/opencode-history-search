@@ -128,6 +128,13 @@ describe("searchMultitermSqlite (in-memory SQLite, OpenCode 2 schema)", () => {
     }
   });
 
+  test("applies the date range before the limit", () => {
+    // ses_g is the newest "truck" session; only the older ses_a is in range.
+    const dateRange = { start: new Date(1774100000000), end: new Date(1774100000999) };
+    const results = searchMultitermSqlite(db, "proj_main", ["truck"], { limit: 1, dateRange });
+    expect(results.map((r) => r.sessionID)).toEqual(["ses_a"]);
+  });
+
   test("respects limit parameter", () => {
     const results = searchMultitermSqlite(db, "proj_main", ["truck"], {
       limit: 2,

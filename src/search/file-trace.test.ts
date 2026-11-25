@@ -193,6 +193,21 @@ describe("file-trace search", () => {
       }
     });
 
+    test("applies the date range before the limit", () => {
+      // ses_d is the newest touch of src/auth.ts; only the oldest, ses_a, is in range.
+      const dateRange = { start: new Date(1774346400000), end: new Date(1774346409999) };
+      const results = traceFileSqlite(db, "proj_main", "src/auth.ts", { limit: 1, dateRange });
+      expect(results.map((r) => r.sessionID)).toEqual(["ses_a"]);
+      expect(results[0]?.firstTouch).toBe(true);
+    });
+
+    test("keeps firstTouch for the first touch overall when it is outside the date range", () => {
+      const dateRange = { start: new Date(1774951200000), end: new Date(1774951209999) };
+      const results = traceFileSqlite(db, "proj_main", "src/auth.ts", { dateRange });
+      expect(results.map((r) => r.sessionID)).toEqual(["ses_b"]);
+      expect(results[0]?.firstTouch).toBe(false);
+    });
+
     test("respects the limit parameter", () => {
       const results = traceFileSqlite(db, "proj_main", "auth.ts", { limit: 2 });
       expect(results).toHaveLength(2);

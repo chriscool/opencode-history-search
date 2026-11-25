@@ -125,8 +125,15 @@ export function filterByDate<T extends { timestamp: number }>(
   results: T[],
   dateRange: DateRange,
 ): T[] {
-  return results.filter((result) => {
-    const timestamp = new Date(result.timestamp);
-    return timestamp >= dateRange.start && timestamp <= dateRange.end;
-  });
+  return results.filter((result) => inDateRange(result.timestamp, dateRange));
+}
+
+/**
+ * True when `timestamp` (milliseconds since epoch) falls in `dateRange`, or
+ * when there is no range. Searches apply this before their result limit, so
+ * that newer matches outside the range cannot use up the limit.
+ */
+export function inDateRange(timestamp: number, dateRange: DateRange | undefined): boolean {
+  if (!dateRange) return true;
+  return timestamp >= dateRange.start.getTime() && timestamp <= dateRange.end.getTime();
 }

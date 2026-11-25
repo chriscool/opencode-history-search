@@ -4,7 +4,7 @@
 import type { Plugin } from "@opencode/plugin";
 import { searchKeyword } from "./search/keyword";
 import { searchFuzzy } from "./search/fuzzy";
-import { parseDateFilter, filterByDate } from "./search/date-filter";
+import { parseDateFilter } from "./search/date-filter";
 import { traceFile } from "./search/file-trace";
 import { searchMultiterm } from "./search/multiterm-sql";
 import { formatResults, formatTraceResults, formatMultitermResults } from "./format";
@@ -119,15 +119,19 @@ export async function runSearch(
       throw new Error("'terms' must be a non-empty array of strings.");
     }
     if (args.terms.length > 1) {
-      const matches = await searchMultiterm(projectID, args.terms, { limit: args.limit });
-      return formatMultitermResults(dateRange ? filterByDate(matches, dateRange) : matches);
+      return formatMultitermResults(
+        await searchMultiterm(projectID, args.terms, { limit: args.limit, dateRange }),
+      );
     }
     query = args.terms[0];
   }
 
+  // Each search applies the date range before its limit: filtering afterwards
+  // would let newer matches outside the range use up the limit.
   if (args.filePath) {
-    const matches = await traceFile(projectID, args.filePath, { limit: args.limit });
-    return formatTraceResults(dateRange ? filterByDate(matches, dateRange) : matches);
+    return formatTraceResults(
+      await traceFile(projectID, args.filePath, { limit: args.limit, dateRange }),
+    );
   }
 
   if (!query) {
@@ -140,15 +144,17 @@ export async function runSearch(
           threshold: args.fuzzyThreshold,
           limit: args.limit,
           role: args.role,
+          dateRange,
         })
       : await searchKeyword(projectID, query, {
           regex: args.regex,
           caseSensitive: args.caseSensitive,
           limit: args.limit,
           role: args.role,
+          dateRange,
         });
 
-  return formatResults(dateRange ? filterByDate(matches, dateRange) : matches);
+  return formatResults(matches);
 }
 
 const plugin: Plugin.Plugin = {

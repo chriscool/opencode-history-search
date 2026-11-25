@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { getDbPath } from "../storage-sqlite";
+import { inDateRange, type DateRange } from "./date-filter";
 
 export interface FileTraceResult {
   sessionID: string;
@@ -13,6 +14,12 @@ export interface FileTraceResult {
 
 export interface TraceFileOptions {
   limit?: number;
+  /**
+   * Keeps touches in this range; applied before the limit. firstTouch still
+   * marks the file's first touch overall, so it is only set when that touch
+   * falls in the range.
+   */
+  dateRange?: DateRange;
 }
 
 export function traceFileSqlite(
@@ -203,7 +210,9 @@ export function traceFileSqlite(
   });
 
   const limit = options?.limit ?? 50;
-  return results.slice(0, limit);
+  return results
+    .filter((result) => inDateRange(result.timestamp, options?.dateRange))
+    .slice(0, limit);
 }
 
 /** Strips the session directory, so absolute tool paths compare like the relative `snapshot.files`. */

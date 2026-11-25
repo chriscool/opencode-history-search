@@ -58,6 +58,16 @@ describe("keyword search (unit tests with mocks)", () => {
     expect(results.length).toBe(0); // Should find 0 since mock has lowercase "storage";
   });
 
+  test("applies the date range before the limit", async () => {
+    // ses_001's title and first message match "storage" at 1706745600000; its
+    // reply matches one second later. Only the reply is in range.
+    const dateRange = { start: new Date(1706745601000), end: new Date(1706745601999) };
+    const results = await searchKeyword(MOCK_PROJECT_ID, "storage", { limit: 1, dateRange });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.timestamp).toBe(1706745601000);
+  });
+
   test("respects limit parameter", async () => {
     const results = await searchKeyword(MOCK_PROJECT_ID, "the", { limit: 2 });
 

@@ -2,6 +2,7 @@ import Fuse from "fuse.js";
 import type { Session, Message, Part } from "../storage-provider";
 import { listSessions, listMessages, listParts } from "../storage-provider";
 import type { SearchMatch } from "./keyword";
+import { inDateRange, type DateRange } from "./date-filter";
 
 interface SearchableItem {
   session: Session;
@@ -19,6 +20,7 @@ export async function searchFuzzy(
     threshold?: number; // 0.0 = exact, 1.0 = anything (default: 0.4)
     limit?: number;
     role?: "user" | "assistant";
+    dateRange?: DateRange;
   } = {},
 ): Promise<SearchMatch[]> {
   const threshold = options.threshold ?? 0.4;
@@ -115,8 +117,8 @@ export async function searchFuzzy(
     return [];
   }
 
-  // Perform fuzzy search
-  const fuse = new Fuse(items, {
+  // Perform fuzzy search, over in-range items only so the limit counts only those
+  const fuse = new Fuse(items.filter((item) => inDateRange(item.timestamp, options.dateRange)), {
     keys: ["content"],
     threshold,
     includeScore: true,

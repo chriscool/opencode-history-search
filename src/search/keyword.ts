@@ -1,5 +1,6 @@
 import type { Session, Message, Part } from "../storage-provider";
 import { listSessions, listMessages, listParts } from "../storage-provider";
+import { inDateRange, type DateRange } from "./date-filter";
 
 export interface SearchMatch {
   sessionID: string;
@@ -21,6 +22,7 @@ export async function searchKeyword(
     caseSensitive?: boolean;
     limit?: number;
     role?: "user" | "assistant";
+    dateRange?: DateRange;
   } = {},
 ): Promise<SearchMatch[]> {
   const results: SearchMatch[] = [];
@@ -36,7 +38,7 @@ export async function searchKeyword(
   for await (const session of listSessions(projectID)) {
     if (results.length >= limit) break;
 
-    if (pattern.test(session.title)) {
+    if (inDateRange(session.time.updated, options.dateRange) && pattern.test(session.title)) {
       results.push({
         sessionID: session.id,
         sessionTitle: session.title,
@@ -51,6 +53,8 @@ export async function searchKeyword(
 
     for await (const message of listMessages(session.id, options.role)) {
       if (results.length >= limit) break;
+      // Every match in a message carries the message's time.
+      if (!inDateRange(message.time.created, options.dateRange)) continue;
 
       for await (const part of listParts(message.id)) {
         if (results.length >= limit) break;
