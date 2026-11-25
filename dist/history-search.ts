@@ -267,7 +267,7 @@ function inDateRange(timestamp, dateRange) {
 async function searchKeyword(projectID, query, options = {}) {
   const results = [];
   const pattern = options.regex ? new RegExp(query, options.caseSensitive ? "" : "i") : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), options.caseSensitive ? "" : "i");
-  const limit = options.limit || 50;
+  const limit = options.limit ?? 50;
   for await (const session of listSessions(projectID)) {
     if (results.length >= limit)
       break;
@@ -2001,7 +2001,7 @@ function buildMultitermSql(terms, projectID, options) {
     GROUP BY s.id
     HAVING ${having}
     ORDER BY s.time_updated DESC
-    LIMIT ${options.limit}
+    LIMIT ?
   `.trim();
   const binds = [];
   for (const term of terms) {
@@ -2015,6 +2015,7 @@ function buildMultitermSql(terms, projectID, options) {
   if (options.dateRange) {
     binds.push(options.dateRange.start.getTime(), options.dateRange.end.getTime());
   }
+  binds.push(options.limit);
   return { sql, binds };
 }
 function searchMultitermSqlite(db, projectID, terms, options) {
@@ -2162,6 +2163,7 @@ function formatMultitermResults(matches) {
 // src/index.ts
 var PLUGIN_ID = "opencode-history-search";
 var TOOL_NAME = "history-search";
+var DEFAULT_LIMIT = 50;
 var description = `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths.
 
 THREE SEARCH MODES:
@@ -2212,7 +2214,8 @@ var input = {
       description: "Filter by date: 'today', 'yesterday', 'last N days/weeks/months', 'YYYY-MM-DD', 'YYYY-MM', 'YYYY-MM-DD to YYYY-MM-DD'"
     },
     limit: {
-      type: "number",
+      type: "integer",
+      minimum: 1,
       description: "Maximum number of results (default: 50)"
     },
     role: {
@@ -2227,6 +2230,10 @@ async function runSearch(args, currentProjectID) {
   if (!args.query && !args.filePath && !args.terms) {
     throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
   }
+  if (args.limit !== undefined && !(Number.isInteger(args.limit) && args.limit >= 1)) {
+    throw new Error(`'limit' must be a positive integer, got ${args.limit}.`);
+  }
+  const limit = args.limit ?? DEFAULT_LIMIT;
   const projectID = args.searchAllProjects ? null : currentProjectID;
   const dateRange = args.date ? parseDateFilter(args.date) : undefined;
   let query = args.query;
@@ -2235,25 +2242,25 @@ async function runSearch(args, currentProjectID) {
       throw new Error("'terms' must be a non-empty array of strings.");
     }
     if (args.terms.length > 1) {
-      return formatMultitermResults(await searchMultiterm(projectID, args.terms, { limit: args.limit, dateRange }));
+      return formatMultitermResults(await searchMultiterm(projectID, args.terms, { limit, dateRange }));
     }
     query = args.terms[0];
   }
   if (args.filePath) {
-    return formatTraceResults(await traceFile(projectID, args.filePath, { limit: args.limit, dateRange }));
+    return formatTraceResults(await traceFile(projectID, args.filePath, { limit, dateRange }));
   }
   if (!query) {
     throw new Error("'query' is required when 'filePath' is not provided.");
   }
   const matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, query, {
     threshold: args.fuzzyThreshold,
-    limit: args.limit,
+    limit,
     role: args.role,
     dateRange
   }) : await searchKeyword(projectID, query, {
     regex: args.regex,
     caseSensitive: args.caseSensitive,
-    limit: args.limit,
+    limit,
     role: args.role,
     dateRange
   });
@@ -2281,5 +2288,6 @@ export {
   description,
   src_default as default,
   TOOL_NAME,
-  PLUGIN_ID
+  PLUGIN_ID,
+  DEFAULT_LIMIT
 };

@@ -127,7 +127,7 @@ export function buildMultitermSql(
     GROUP BY s.id
     HAVING ${having}
     ORDER BY s.time_updated DESC
-    LIMIT ${options.limit}
+    LIMIT ?
   `.trim();
 
   const binds: any[] = [];
@@ -142,6 +142,7 @@ export function buildMultitermSql(
   if (options.dateRange) {
     binds.push(options.dateRange.start.getTime(), options.dateRange.end.getTime());
   }
+  binds.push(options.limit);
 
   return { sql, binds };
 }

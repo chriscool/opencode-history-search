@@ -11,6 +11,8 @@ import { formatResults, formatTraceResults, formatMultitermResults } from "./for
 
 export const PLUGIN_ID = "opencode-history-search";
 export const TOOL_NAME = "history-search";
+/** Results per search when `limit` is not given, in every mode. */
+export const DEFAULT_LIMIT = 50;
 
 export const description = `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths.
 
@@ -70,7 +72,8 @@ export const input = {
         "Filter by date: 'today', 'yesterday', 'last N days/weeks/months', 'YYYY-MM-DD', 'YYYY-MM', 'YYYY-MM-DD to YYYY-MM-DD'",
     },
     limit: {
-      type: "number",
+      type: "integer",
+      minimum: 1,
       description: "Maximum number of results (default: 50)",
     },
     role: {
@@ -109,7 +112,12 @@ export async function runSearch(
   if (!args.query && !args.filePath && !args.terms) {
     throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
   }
+  // OpenCode already enforces the input schema; this covers direct callers.
+  if (args.limit !== undefined && !(Number.isInteger(args.limit) && args.limit >= 1)) {
+    throw new Error(`'limit' must be a positive integer, got ${args.limit}.`);
+  }
 
+  const limit = args.limit ?? DEFAULT_LIMIT;
   const projectID = args.searchAllProjects ? null : currentProjectID;
   const dateRange = args.date ? parseDateFilter(args.date) : undefined;
   let query = args.query;
@@ -120,7 +128,7 @@ export async function runSearch(
     }
     if (args.terms.length > 1) {
       return formatMultitermResults(
-        await searchMultiterm(projectID, args.terms, { limit: args.limit, dateRange }),
+        await searchMultiterm(projectID, args.terms, { limit, dateRange }),
       );
     }
     query = args.terms[0];
@@ -130,7 +138,7 @@ export async function runSearch(
   // would let newer matches outside the range use up the limit.
   if (args.filePath) {
     return formatTraceResults(
-      await traceFile(projectID, args.filePath, { limit: args.limit, dateRange }),
+      await traceFile(projectID, args.filePath, { limit, dateRange }),
     );
   }
 
@@ -142,14 +150,14 @@ export async function runSearch(
     args.mode === "fuzzy"
       ? await searchFuzzy(projectID, query, {
           threshold: args.fuzzyThreshold,
-          limit: args.limit,
+          limit,
           role: args.role,
           dateRange,
         })
       : await searchKeyword(projectID, query, {
           regex: args.regex,
           caseSensitive: args.caseSensitive,
-          limit: args.limit,
+          limit,
           role: args.role,
           dateRange,
         });

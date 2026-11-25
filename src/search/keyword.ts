@@ -33,7 +33,7 @@ export async function searchKeyword(
         options.caseSensitive ? "" : "i",
       );
 
-  const limit = options.limit || 50;
+  const limit = options.limit ?? 50;
 
   for await (const session of listSessions(projectID)) {
     if (results.length >= limit) break;

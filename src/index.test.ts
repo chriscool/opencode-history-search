@@ -34,6 +34,18 @@ describe("history-search plugin", () => {
     await expect(runSearch({}, "proj_main")).rejects.toThrow("Either 'query', 'terms', or 'filePath'");
   });
 
+  test("declares limit as a positive integer, so OpenCode rejects other values", () => {
+    expect(input.properties.limit).toMatchObject({ type: "integer", minimum: 1 });
+  });
+
+  test("rejects a limit that is not a positive integer", async () => {
+    for (const limit of [2.5, -1, 0]) {
+      await expect(runSearch({ query: "storage", limit }, "proj_main")).rejects.toThrow(
+        "'limit' must be a positive integer",
+      );
+    }
+  });
+
   test("rejects an empty terms array", async () => {
     await expect(runSearch({ terms: [] }, "proj_main")).rejects.toThrow("non-empty array");
   });

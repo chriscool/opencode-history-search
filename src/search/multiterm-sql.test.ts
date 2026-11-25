@@ -1,6 +1,6 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { searchMultitermSqlite, searchMultiterm } from "./multiterm-sql";
+import { buildMultitermSql, searchMultitermSqlite, searchMultiterm } from "./multiterm-sql";
 import { createV2Db, addSession, addUser, addAssistant, attachment, text, tool } from "../test-fixture";
 
 describe("searchMultitermSqlite (in-memory SQLite, OpenCode 2 schema)", () => {
@@ -142,6 +142,12 @@ describe("searchMultitermSqlite (in-memory SQLite, OpenCode 2 schema)", () => {
         results[i + 1]!.timestamp,
       );
     }
+  });
+
+  test("binds the limit as a parameter", () => {
+    const { sql, binds } = buildMultitermSql(["truck"], null, { limit: 7 });
+    expect(sql).toContain("LIMIT ?");
+    expect(binds.at(-1)).toBe(7);
   });
 
   test("applies the date range before the limit", () => {
