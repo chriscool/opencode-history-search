@@ -44,8 +44,14 @@ export function traceFileSqlite(
   //      which replace v1's patch parts and also cover the `patch` tool.
   const toolPath = (json: string) =>
     `COALESCE(json_extract(${json}, '$.state.input.path'), json_extract(${json}, '$.state.input.filePath'))`;
-  // json_each() rejects malformed JSON even when WHERE would filter the row out.
-  const safeData = "CASE WHEN json_valid(m.data) THEN m.data ELSE '{}' END";
+  // json_extract() and json_each() throw on anything that is not JSON, which
+  // would fail the whole query. SQLite does not promise to evaluate WHERE
+  // conditions in order, so a json_valid() test next to them is not enough;
+  // CASE is always evaluated lazily, and json_extract(NULL, ...) is NULL.
+  const partData = "(CASE WHEN json_valid(p.data) THEN p.data END)";
+  const messageData = "(CASE WHEN json_valid(m.data) THEN m.data END)";
+  // Inline content items are only JSON when they are objects (c.type), not strings or numbers.
+  const content = "(CASE WHEN c.type = 'object' THEN c.value END)";
 
   const sql = `
     SELECT
@@ -54,33 +60,32 @@ export function traceFileSqlite(
       s.directory AS directory,
       m.id AS message_id,
       m.time_created AS message_time,
-      json_extract(p.data, '$.name') AS tool_name,
-      ${toolPath("p.data")} AS matched_file_path_tool,
+      json_extract(${partData}, '$.name') AS tool_name,
+      ${toolPath(partData)} AS matched_file_path_tool,
       NULL AS matched_files_patch,
       0 AS source_priority
     FROM session_v2 s
     JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
     JOIN session_part p ON p.message_id = m.id
     WHERE p.type = 'tool'
-      AND json_valid(p.data)
-      AND json_extract(p.data, '$.name') IN ('write', 'edit')
-      AND ${toolPath("p.data")} LIKE ?
+      AND json_extract(${partData}, '$.name') IN ('write', 'edit')
+      AND ${toolPath(partData)} LIKE ?
       ${projectFilter}
 
     UNION ALL
 
     SELECT
       s.id, s.title, s.directory, m.id, m.time_created,
-      json_extract(c.value, '$.name'),
-      ${toolPath("c.value")},
+      json_extract(${content}, '$.name'),
+      ${toolPath(content)},
       NULL,
       0
     FROM session_v2 s
     JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
-    JOIN json_each(${safeData}, '$.content') c
-    WHERE json_extract(c.value, '$.type') = 'tool'
-      AND json_extract(c.value, '$.name') IN ('write', 'edit')
-      AND ${toolPath("c.value")} LIKE ?
+    JOIN json_each(COALESCE(${messageData}, '{}'), '$.content') c
+    WHERE json_extract(${content}, '$.type') = 'tool'
+      AND json_extract(${content}, '$.name') IN ('write', 'edit')
+      AND ${toolPath(content)} LIKE ?
       ${projectFilter}
 
     UNION ALL
@@ -89,12 +94,11 @@ export function traceFileSqlite(
       s.id, s.title, s.directory, m.id, m.time_created,
       NULL,
       NULL,
-      json_extract(m.data, '$.snapshot.files'),
+      json_extract(${messageData}, '$.snapshot.files'),
       1
     FROM session_v2 s
     JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
-    WHERE json_valid(m.data)
-      AND json_extract(m.data, '$.snapshot.files') LIKE ?
+    WHERE json_extract(${messageData}, '$.snapshot.files') LIKE ?
       ${projectFilter}
     ORDER BY message_time DESC, source_priority ASC
   `;

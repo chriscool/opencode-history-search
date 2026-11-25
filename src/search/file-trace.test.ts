@@ -70,6 +70,14 @@ describe("file-trace search", () => {
     addSession(db, { ...main, id: "ses_g", title: "malformed patch", created: 1775386800000, updated: 1775386801200 });
     addAssistant(db, { id: "msg_g1", sessionID: "ses_g", time: 1775386800000, data: '{"snapshot":{"files":oops}}' });
 
+    // ses_i: inline content holding non-objects, which must not break the query.
+    addSession(db, { ...main, id: "ses_i", title: "odd inline content", created: 1775392000000, updated: 1775392001000 });
+    addAssistant(db, {
+      id: "msg_i1", sessionID: "ses_i", time: 1775392000000,
+      data: JSON.stringify({ content: ["oops", 42, tool("write", { path: "src/odd.ts" }, "Wrote src/odd.ts")] }),
+    });
+    addAssistant(db, { id: "msg_i2", sessionID: "ses_i", time: 1775392001000, data: JSON.stringify({ content: "oops" }) });
+
     // ses_h: assistant content stored inline by early 2.x releases.
     addSession(db, { ...main, id: "ses_h", title: "legacy inline content", created: 1775390000000, updated: 1775390001000 });
     addUser(db, { id: "msg_h1", sessionID: "ses_h", time: 1775390000000, text: "write the legacy module" });
@@ -253,6 +261,12 @@ describe("file-trace search", () => {
     test("reports absolute tool paths relative to the session directory", () => {
       const sesD = traceFileSqlite(db, "proj_main", "src/auth.ts").find((r) => r.sessionID === "ses_d");
       expect(sesD?.filePath).toBe("src/auth.ts");
+    });
+
+    test("skips inline content that is not an object without failing the query", () => {
+      const results = traceFileSqlite(db, "proj_main", "src/odd.ts");
+      expect(results.map((r) => [r.sessionID, r.toolName])).toEqual([["ses_i", "write"]]);
+      expect(traceFileSqlite(db, "proj_main", "src/auth.ts").map((r) => r.sessionID)).toEqual(["ses_d", "ses_b", "ses_a"]);
     });
 
     test("finds tool calls stored inline in the message by early 2.x releases", () => {
