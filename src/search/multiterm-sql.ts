@@ -227,10 +227,8 @@ export async function searchMultiterm(
   terms: string[],
   options?: { limit?: number; dateRange?: DateRange },
 ): Promise<MultitermSearchMatch[]> {
-  const { Database } = await import("bun:sqlite");
-  const { getDbPath } = await import("../storage-sqlite");
-  const dbPath = getDbPath();
-  const db = new Database(dbPath, { readonly: true });
+  const { openDb } = await import("../storage-sqlite");
+  const db = openDb();
   try {
     return searchMultitermSqlite(db, projectID, terms, options);
   } finally {

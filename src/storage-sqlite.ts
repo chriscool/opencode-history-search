@@ -15,22 +15,49 @@ import type { Session, Message, Part } from "./storage";
  * changes it, these queries are the place to update.
  */
 
+/**
+ * The OpenCode database, found the way OpenCode finds it
+ * (packages/cli/src/database-path.ts): `OPENCODE_DB`, resolved against
+ * OpenCode's data directory, or `opencode.db` there. The plugin runs inside
+ * the OpenCode server, so it sees the same environment.
+ *
+ * Builds from other release channels use `opencode-<channel>.db`, which the
+ * plugin cannot detect; set OPENCODE_DB for those.
+ */
 export function getDbPath(): string {
-  const xdgData =
-    process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
-  return path.join(xdgData, "opencode", "opencode.db");
+  const dataDir = path.join(
+    process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"),
+    "opencode",
+  );
+  const file = process.env.OPENCODE_DB || "opencode.db";
+  return file === ":memory:" ? file : path.resolve(dataDir, file);
 }
 
-export function dbExists(): boolean {
+/**
+ * Opens the OpenCode database read-only. Fails with an explanation when it
+ * is not there: OpenCode creates its database before it loads plugins, so a
+ * missing one means it is somewhere else, and returning no results would
+ * look like an empty history.
+ */
+export function openDb(): Database {
+  const dbPath = getDbPath();
+  if (dbPath === ":memory:") {
+    throw new Error("OpenCode keeps its database in memory (OPENCODE_DB=:memory:), so there is no history to search.");
+  }
+  if (!dbExists(dbPath)) {
+    throw new Error(
+      `OpenCode database not found at ${dbPath}. If OpenCode keeps it elsewhere, set OPENCODE_DB to its path.`,
+    );
+  }
+  return new Database(dbPath, { readonly: true });
+}
+
+function dbExists(dbPath: string): boolean {
   try {
-    return Bun.file(getDbPath()).size > 0;
+    return Bun.file(dbPath).size > 0;
   } catch {
     return false;
   }
-}
-
-function openDb(): Database {
-  return new Database(getDbPath(), { readonly: true });
 }
 
 /** Message types that carry conversation content; the rest are control markers. */

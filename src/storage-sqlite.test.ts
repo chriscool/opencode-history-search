@@ -1,7 +1,12 @@
-import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import type { Database } from "bun:sqlite";
+import { mkdtempSync, mkdirSync, rmSync } from "fs";
+import os from "os";
+import path from "path";
 import type { Session, Message, Part } from "./storage";
-import { listSessionsSqlite, listMessagesSqlite, listPartsSqlite, toolOutput } from "./storage-sqlite";
+import { getDbPath, listSessionsSqlite, listMessagesSqlite, listPartsSqlite, toolOutput } from "./storage-sqlite";
+import { traceFile } from "./search/file-trace";
+import { searchMultiterm } from "./search/multiterm-sql";
 import { createV2Db, addSession, addUser, addAssistant, text, tool } from "./test-fixture";
 
 async function collect<T>(items: AsyncGenerator<T>): Promise<T[]> {
@@ -112,6 +117,61 @@ describe("OpenCode 2 SQLite storage", () => {
 
     test("returns nothing for an unknown message", async () => {
       expect(await collect(listPartsSqlite("msg_missing", db))).toEqual([]);
+    });
+  });
+
+  describe("database location", () => {
+    const saved = { XDG_DATA_HOME: process.env.XDG_DATA_HOME, OPENCODE_DB: process.env.OPENCODE_DB };
+    let dataHome: string;
+
+    beforeEach(() => {
+      dataHome = mkdtempSync(path.join(os.tmpdir(), "history-search-"));
+      process.env.XDG_DATA_HOME = dataHome;
+      delete process.env.OPENCODE_DB;
+    });
+
+    afterEach(() => {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(dataHome, { recursive: true, force: true });
+    });
+
+    test("defaults to opencode.db in OpenCode's data directory", () => {
+      expect(getDbPath()).toBe(path.join(dataHome, "opencode", "opencode.db"));
+    });
+
+    test("resolves a relative OPENCODE_DB against the data directory, like OpenCode", () => {
+      process.env.OPENCODE_DB = "opencode-beta2.db";
+      expect(getDbPath()).toBe(path.join(dataHome, "opencode", "opencode-beta2.db"));
+    });
+
+    test("uses an absolute OPENCODE_DB as is", () => {
+      process.env.OPENCODE_DB = path.join(dataHome, "elsewhere.db");
+      expect(getDbPath()).toBe(path.join(dataHome, "elsewhere.db"));
+    });
+
+    test("reads the database OPENCODE_DB points to", async () => {
+      const file = path.join(dataHome, "elsewhere.db");
+      const db = createV2Db(file);
+      addSession(db, { id: "ses_elsewhere", projectID: "proj1", directory: "/mock", title: "Found it", created: 1 });
+      db.close();
+      process.env.OPENCODE_DB = file;
+      expect((await collect(listSessionsSqlite(null))).map((s) => s.id)).toEqual(["ses_elsewhere"]);
+    });
+
+    test("every search mode explains a missing database instead of finding nothing", async () => {
+      mkdirSync(path.join(dataHome, "opencode"));
+      const message = `OpenCode database not found at ${path.join(dataHome, "opencode", "opencode.db")}`;
+      await expect(collect(listSessionsSqlite(null))).rejects.toThrow(message);
+      await expect(traceFile(null, "src/auth.ts")).rejects.toThrow(message);
+      await expect(searchMultiterm(null, ["a", "b"])).rejects.toThrow(message);
+    });
+
+    test("explains an in-memory database", async () => {
+      process.env.OPENCODE_DB = ":memory:";
+      await expect(collect(listSessionsSqlite(null))).rejects.toThrow("in memory");
     });
   });
 

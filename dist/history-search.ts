@@ -14,35 +14,42 @@ var __export = (target, all) => {
     });
 };
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
-var __require = import.meta.require;
 
 // src/storage-sqlite.ts
 var exports_storage_sqlite = {};
 __export(exports_storage_sqlite, {
   toolOutput: () => toolOutput,
+  openDb: () => openDb,
   listSessionsSqlite: () => listSessionsSqlite,
   listPartsSqlite: () => listPartsSqlite,
   listMessagesSqlite: () => listMessagesSqlite,
   getDbPath: () => getDbPath,
-  dbExists: () => dbExists,
   SEARCHABLE_MESSAGE_TYPES: () => SEARCHABLE_MESSAGE_TYPES
 });
 import { Database } from "bun:sqlite";
 import path from "path";
 import os from "os";
 function getDbPath() {
-  const xdgData = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
-  return path.join(xdgData, "opencode", "opencode.db");
+  const dataDir = path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share"), "opencode");
+  const file = process.env.OPENCODE_DB || "opencode.db";
+  return file === ":memory:" ? file : path.resolve(dataDir, file);
 }
-function dbExists() {
+function openDb() {
+  const dbPath = getDbPath();
+  if (dbPath === ":memory:") {
+    throw new Error("OpenCode keeps its database in memory (OPENCODE_DB=:memory:), so there is no history to search.");
+  }
+  if (!dbExists(dbPath)) {
+    throw new Error(`OpenCode database not found at ${dbPath}. If OpenCode keeps it elsewhere, set OPENCODE_DB to its path.`);
+  }
+  return new Database(dbPath, { readonly: true });
+}
+function dbExists(dbPath) {
   try {
-    return Bun.file(getDbPath()).size > 0;
+    return Bun.file(dbPath).size > 0;
   } catch {
     return false;
   }
-}
-function openDb() {
-  return new Database(getDbPath(), { readonly: true });
 }
 async function* listSessionsSqlite(projectID, db) {
   const shouldClose = db === undefined;
@@ -170,16 +177,13 @@ var init_storage_sqlite = __esm(() => {
 // src/storage-provider.ts
 init_storage_sqlite();
 async function* listSessions(projectID) {
-  if (dbExists())
-    yield* listSessionsSqlite(projectID);
+  yield* listSessionsSqlite(projectID);
 }
 async function* listMessages(sessionID, role) {
-  if (dbExists())
-    yield* listMessagesSqlite(sessionID, role);
+  yield* listMessagesSqlite(sessionID, role);
 }
 async function* listParts(messageID) {
-  if (dbExists())
-    yield* listPartsSqlite(messageID);
+  yield* listPartsSqlite(messageID);
 }
 
 // src/search/date-filter.ts
@@ -1673,79 +1677,67 @@ async function searchFuzzy(projectID, query, options = {}) {
   const threshold = options.threshold ?? 0.4;
   const limit = options.limit ?? 50;
   const items = [];
-  try {
-    for await (const session of listSessions(projectID)) {
-      items.push({
-        session,
-        content: session.title,
-        type: "title",
-        timestamp: session.time.updated
-      });
-      try {
-        for await (const message of listMessages(session.id, options.role)) {
-          try {
-            for await (const part of listParts(message.id)) {
-              if (part.type === "text" && part.text) {
-                items.push({
-                  session,
-                  content: part.text,
-                  type: "message",
-                  messageID: message.id,
-                  partID: part.id,
-                  timestamp: message.time.created
-                });
-              }
-              if (part.type === "tool" && part.tool) {
-                items.push({
-                  session,
-                  content: part.tool + " " + (part.state?.title || ""),
-                  type: "tool",
-                  messageID: message.id,
-                  partID: part.id,
-                  timestamp: message.time.created
-                });
-              }
-              if (part.type === "tool" && part.state) {
-                const inputStr = JSON.stringify(part.state.input || {});
-                const outputStr = part.state.output || "";
-                const combined = inputStr + " " + outputStr;
-                const pathMatches = combined.match(/(?:\/[^/\s]+)+/g);
-                if (pathMatches) {
-                  for (const path2 of pathMatches) {
-                    items.push({
-                      session,
-                      content: path2,
-                      type: "filepath",
-                      messageID: message.id,
-                      partID: part.id,
-                      timestamp: message.time.created
-                    });
-                  }
-                }
-              }
-              if (part.type === "patch" && part.files) {
-                for (const filePath of part.files) {
-                  items.push({
-                    session,
-                    content: filePath,
-                    type: "filepath",
-                    messageID: message.id,
-                    partID: part.id,
-                    timestamp: message.time.created
-                  });
-                }
-              }
+  for await (const session of listSessions(projectID)) {
+    items.push({
+      session,
+      content: session.title,
+      type: "title",
+      timestamp: session.time.updated
+    });
+    for await (const message of listMessages(session.id, options.role)) {
+      for await (const part of listParts(message.id)) {
+        if (part.type === "text" && part.text) {
+          items.push({
+            session,
+            content: part.text,
+            type: "message",
+            messageID: message.id,
+            partID: part.id,
+            timestamp: message.time.created
+          });
+        }
+        if (part.type === "tool" && part.tool) {
+          items.push({
+            session,
+            content: part.tool + " " + (part.state?.title || ""),
+            type: "tool",
+            messageID: message.id,
+            partID: part.id,
+            timestamp: message.time.created
+          });
+        }
+        if (part.type === "tool" && part.state) {
+          const inputStr = JSON.stringify(part.state.input || {});
+          const outputStr = part.state.output || "";
+          const combined = inputStr + " " + outputStr;
+          const pathMatches = combined.match(/(?:\/[^/\s]+)+/g);
+          if (pathMatches) {
+            for (const path2 of pathMatches) {
+              items.push({
+                session,
+                content: path2,
+                type: "filepath",
+                messageID: message.id,
+                partID: part.id,
+                timestamp: message.time.created
+              });
             }
-          } catch {
-            continue;
           }
         }
-      } catch {
-        continue;
+        if (part.type === "patch" && part.files) {
+          for (const filePath of part.files) {
+            items.push({
+              session,
+              content: filePath,
+              type: "filepath",
+              messageID: message.id,
+              partID: part.id,
+              timestamp: message.time.created
+            });
+          }
+        }
       }
     }
-  } catch {
-    return [];
   }
   const fuse = new Fuse(items.filter((item) => inDateRange(item.timestamp, options.dateRange)), {
     keys: ["content"],
@@ -1930,9 +1922,7 @@ function isMatch(path2, query, isExact) {
   return path2 === query || path2.endsWith(`/${query}`);
 }
 async function traceFile(projectID, filePath, options) {
-  const { Database: Database2 } = await import("bun:sqlite");
-  const dbPath = getDbPath();
-  const db = new Database2(dbPath, { readonly: true });
+  const db = openDb();
   try {
     return traceFileSqlite(db, projectID, filePath, options);
   } finally {
@@ -2074,10 +2064,8 @@ function searchMultitermSqlite(db, projectID, terms, options) {
   }));
 }
 async function searchMultiterm(projectID, terms, options) {
-  const { Database: Database2 } = await import("bun:sqlite");
-  const { getDbPath: getDbPath2 } = await Promise.resolve().then(() => (init_storage_sqlite(), exports_storage_sqlite));
-  const dbPath = getDbPath2();
-  const db = new Database2(dbPath, { readonly: true });
+  const { openDb: openDb2 } = await Promise.resolve().then(() => (init_storage_sqlite(), exports_storage_sqlite));
+  const db = openDb2();
   try {
     return searchMultitermSqlite(db, projectID, terms, options);
   } finally {

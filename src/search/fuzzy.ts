@@ -29,92 +29,77 @@ export async function searchFuzzy(
   // Build searchable index
   const items: SearchableItem[] = [];
 
-  try {
-    for await (const session of listSessions(projectID)) {
-      // Index session title
-      items.push({
-        session,
-        content: session.title,
-        type: "title",
-        timestamp: session.time.updated,
-      });
+  for await (const session of listSessions(projectID)) {
+    // Index session title
+    items.push({
+      session,
+      content: session.title,
+      type: "title",
+      timestamp: session.time.updated,
+    });
 
-      // Index messages
-      try {
-        for await (const message of listMessages(session.id, options.role)) {
-          try {
-            for await (const part of listParts(message.id)) {
-              if (part.type === "text" && part.text) {
-                items.push({
-                  session,
-                  content: part.text,
-                  type: "message",
-                  messageID: message.id,
-                  partID: part.id,
-                  timestamp: message.time.created,
-                });
-              }
+    // Index messages
+    for await (const message of listMessages(session.id, options.role)) {
+      for await (const part of listParts(message.id)) {
+        if (part.type === "text" && part.text) {
+          items.push({
+            session,
+            content: part.text,
+            type: "message",
+            messageID: message.id,
+            partID: part.id,
+            timestamp: message.time.created,
+          });
+        }
 
-              if (part.type === "tool" && part.tool) {
-                items.push({
-                  session,
-                  content: part.tool + " " + (part.state?.title || ""),
-                  type: "tool",
-                  messageID: message.id,
-                  partID: part.id,
-                  timestamp: message.time.created,
-                });
-              }
+        if (part.type === "tool" && part.tool) {
+          items.push({
+            session,
+            content: part.tool + " " + (part.state?.title || ""),
+            type: "tool",
+            messageID: message.id,
+            partID: part.id,
+            timestamp: message.time.created,
+          });
+        }
 
-              // Index file paths from tool inputs/outputs
-              if (part.type === "tool" && part.state) {
-                const inputStr = JSON.stringify(part.state.input || {});
-                const outputStr = part.state.output || "";
-                const combined = inputStr + " " + outputStr;
+        // Index file paths from tool inputs/outputs
+        if (part.type === "tool" && part.state) {
+          const inputStr = JSON.stringify(part.state.input || {});
+          const outputStr = part.state.output || "";
+          const combined = inputStr + " " + outputStr;
 
-                // Extract file path patterns
-                const pathMatches = combined.match(/(?:\/[^/\s]+)+/g);
-                if (pathMatches) {
-                  for (const path of pathMatches) {
-                    items.push({
-                      session,
-                      content: path,
-                      type: "filepath",
-                      messageID: message.id,
-                      partID: part.id,
-                      timestamp: message.time.created,
-                    });
-                  }
-                }
-              }
-
-              // Index file paths from patch parts
-              if (part.type === "patch" && part.files) {
-                for (const filePath of part.files) {
-                  items.push({
-                    session,
-                    content: filePath,
-                    type: "filepath",
-                    messageID: message.id,
-                    partID: part.id,
-                    timestamp: message.time.created,
-                  });
-                }
-              }
+          // Extract file path patterns
+          const pathMatches = combined.match(/(?:\/[^/\s]+)+/g);
+          if (pathMatches) {
+            for (const path of pathMatches) {
+              items.push({
+                session,
+                content: path,
+                type: "filepath",
+                messageID: message.id,
+                partID: part.id,
+                timestamp: message.time.created,
+              });
             }
-          } catch {
-            // Skip corrupt part files
-            continue;
           }
         }
-      } catch {
-        // Skip sessions with missing message directory
-        continue;
+
+        // Index file paths from patch parts
+        if (part.type === "patch" && part.files) {
+          for (const filePath of part.files) {
+            items.push({
+              session,
+              content: filePath,
+              type: "filepath",
+              messageID: message.id,
+              partID: part.id,
+              timestamp: message.time.created,
+            });
+          }
+        }
       }
     }
-  } catch {
-    // Handle missing sessions directory
-    return [];
   }
 
   // Perform fuzzy search, over in-range items only so the limit counts only those

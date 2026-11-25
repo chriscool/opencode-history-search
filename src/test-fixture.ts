@@ -7,8 +7,8 @@ import { Database } from "bun:sqlite";
  * Session.Message schemas: user prompt text on the message, assistant content
  * in parts, modified files in `snapshot.files`.
  */
-export function createV2Db(): Database {
-  const db = new Database(":memory:");
+export function createV2Db(file = ":memory:"): Database {
+  const db = new Database(file);
   db.run(`CREATE TABLE session_v2 (
     id TEXT PRIMARY KEY, project_id TEXT NOT NULL, parent_id TEXT, slug TEXT NOT NULL,
     directory TEXT NOT NULL, title TEXT, version TEXT NOT NULL,

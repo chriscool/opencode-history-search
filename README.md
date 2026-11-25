@@ -350,6 +350,13 @@ Found 3 sessions in conversation history:
 └── session_part      # assistant text and tool calls
 ```
 
+If you set `OPENCODE_DB` to move OpenCode's database, the plugin follows it; a
+relative value is resolved against `~/.local/share/opencode/`, as OpenCode does.
+OpenCode builds from other release channels use `opencode-<channel>.db`, which
+the plugin cannot detect, so set `OPENCODE_DB` for those. When no database is
+found, searches fail with an error saying where they looked, rather than
+reporting no matches.
+
 These are OpenCode's internal tables, not a public API. If an OpenCode release
 changes them, the queries to update are in `storage-sqlite.ts`,
 `search/file-trace.ts` and `search/multiterm-sql.ts`.

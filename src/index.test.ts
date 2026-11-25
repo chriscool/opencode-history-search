@@ -1,4 +1,7 @@
 import { test, expect, describe } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import os from "os";
+import path from "path";
 import plugin, { PLUGIN_ID, TOOL_NAME, input, runSearch } from "./index";
 
 describe("history-search plugin", () => {
@@ -33,5 +36,28 @@ describe("history-search plugin", () => {
 
   test("rejects an empty terms array", async () => {
     await expect(runSearch({ terms: [] }, "proj_main")).rejects.toThrow("non-empty array");
+  });
+
+  test("every mode explains a missing database instead of finding nothing", async () => {
+    const saved = { XDG_DATA_HOME: process.env.XDG_DATA_HOME, OPENCODE_DB: process.env.OPENCODE_DB };
+    const dataHome = mkdtempSync(path.join(os.tmpdir(), "history-search-"));
+    process.env.XDG_DATA_HOME = dataHome;
+    delete process.env.OPENCODE_DB;
+    try {
+      for (const args of [
+        { query: "storage" },
+        { query: "storage", mode: "fuzzy" as const },
+        { terms: ["storage", "layer"] },
+        { filePath: "src/storage.ts" },
+      ]) {
+        await expect(runSearch(args, "proj_main")).rejects.toThrow("OpenCode database not found");
+      }
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(dataHome, { recursive: true, force: true });
+    }
   });
 });

@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { getDbPath } from "../storage-sqlite";
+import { openDb } from "../storage-sqlite";
 import { inDateRange, type DateRange } from "./date-filter";
 
 export interface FileTraceResult {
@@ -238,9 +238,7 @@ export async function traceFile(
   filePath: string,
   options?: TraceFileOptions
 ): Promise<FileTraceResult[]> {
-  const { Database } = await import("bun:sqlite");
-  const dbPath = getDbPath();
-  const db = new Database(dbPath, { readonly: true });
+  const db = openDb();
   try {
     return traceFileSqlite(db, projectID, filePath, options);
   } finally {
