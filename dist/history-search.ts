@@ -1678,13 +1678,17 @@ async function searchFuzzy(projectID, query, options = {}) {
   const limit = options.limit ?? 50;
   const items = [];
   for await (const session of listSessions(projectID)) {
-    items.push({
-      session,
-      content: session.title,
-      type: "title",
-      timestamp: session.time.updated
-    });
+    if (inDateRange(session.time.updated, options.dateRange)) {
+      items.push({
+        session,
+        content: session.title,
+        type: "title",
+        timestamp: session.time.updated
+      });
+    }
     for await (const message of listMessages(session.id, options.role)) {
+      if (!inDateRange(message.time.created, options.dateRange))
+        continue;
       for await (const part of listParts(message.id)) {
         if (part.type === "text" && part.text) {
           items.push({
@@ -1739,7 +1743,7 @@ async function searchFuzzy(projectID, query, options = {}) {
       }
     }
   }
-  const fuse = new Fuse(items.filter((item) => inDateRange(item.timestamp, options.dateRange)), {
+  const fuse = new Fuse(items, {
     keys: ["content"],
     threshold,
     includeScore: true,

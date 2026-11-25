@@ -8,11 +8,17 @@ import {
 } from "../../test/fixtures/mock-data";
 
 describe("fuzzy search (unit tests with mocks)", () => {
+  /** Messages whose parts were read, to check what a search loads. */
+  const partsRead: string[] = [];
+
   beforeAll(() => {
     mock.module("../storage-provider", () => ({
       listSessions: mockListSessions,
       listMessages: mockListMessages,
-      listParts: mockListParts,
+      listParts: (messageID: string) => {
+        partsRead.push(messageID);
+        return mockListParts(messageID);
+      },
       getStorageDir: async () => "/mock/storage",
       getCurrentProjectID: async () => MOCK_PROJECT_ID,
     }));
@@ -59,6 +65,14 @@ describe("fuzzy search (unit tests with mocks)", () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]?.timestamp).toBe(1706745600000);
+  });
+
+  test("does not read messages outside the date range", async () => {
+    // Only ses_001's first message, msg_001, was created in this range.
+    const dateRange = { start: new Date(1706745600000), end: new Date(1706745600999) };
+    partsRead.length = 0;
+    await searchFuzzy(MOCK_PROJECT_ID, "storage", { limit: 5, dateRange });
+    expect(partsRead).toEqual(["msg_001"]);
   });
 
   test("respects limit parameter", async () => {

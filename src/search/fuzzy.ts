@@ -31,15 +31,19 @@ export async function searchFuzzy(
 
   for await (const session of listSessions(projectID)) {
     // Index session title
-    items.push({
-      session,
-      content: session.title,
-      type: "title",
-      timestamp: session.time.updated,
-    });
+    if (inDateRange(session.time.updated, options.dateRange)) {
+      items.push({
+        session,
+        content: session.title,
+        type: "title",
+        timestamp: session.time.updated,
+      });
+    }
 
-    // Index messages
+    // Index messages. Every item from a message carries the message's time,
+    // so out-of-range messages are skipped before their parts are read.
     for await (const message of listMessages(session.id, options.role)) {
+      if (!inDateRange(message.time.created, options.dateRange)) continue;
       for await (const part of listParts(message.id)) {
         if (part.type === "text" && part.text) {
           items.push({
@@ -102,8 +106,8 @@ export async function searchFuzzy(
     }
   }
 
-  // Perform fuzzy search, over in-range items only so the limit counts only those
-  const fuse = new Fuse(items.filter((item) => inDateRange(item.timestamp, options.dateRange)), {
+  // Perform fuzzy search; items are all in range, so the limit counts only those
+  const fuse = new Fuse(items, {
     keys: ["content"],
     threshold,
     includeScore: true,
