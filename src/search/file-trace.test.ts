@@ -78,6 +78,15 @@ describe("file-trace search", () => {
     });
     addAssistant(db, { id: "msg_i2", sessionID: "ses_i", time: 1775392001000, data: JSON.stringify({ content: "oops" }) });
 
+    // ses_k: two prompts and the reply that edits a file, in the same millisecond.
+    addSession(db, { ...main, id: "ses_k", title: "same millisecond", created: 1775394000000 });
+    addUser(db, { id: "msg_k1", sessionID: "ses_k", time: 1775394000000, text: "first prompt" });
+    addUser(db, { id: "msg_k2", sessionID: "ses_k", time: 1775394000000, text: "second prompt" });
+    addAssistant(db, {
+      id: "msg_k3", sessionID: "ses_k", time: 1775394000000,
+      parts: [tool("write", { path: "src/same-ms.ts" }, "Wrote src/same-ms.ts")],
+    });
+
     // ses_h: assistant content stored inline by early 2.x releases.
     addSession(db, { ...main, id: "ses_h", title: "legacy inline content", created: 1775390000000, updated: 1775390001000 });
     addUser(db, { id: "msg_h1", sessionID: "ses_h", time: 1775390000000, text: "write the legacy module" });
@@ -174,6 +183,11 @@ describe("file-trace search", () => {
       const results = traceFileSqlite(db, "proj_main", "src/auth.ts");
       const sesD = results.find((r) => r.sessionID === "ses_d");
       expect(sesD?.userPrompt).toBe("specifically in auth.ts");
+    });
+
+    test("orders messages by their position in the session, not their timestamps", () => {
+      const results = traceFileSqlite(db, "proj_main", "src/same-ms.ts");
+      expect(results.map((r) => r.userPrompt)).toEqual(["second prompt"]);
     });
 
     test("returns null when no preceding user message exists", () => {

@@ -60,6 +60,7 @@ export function traceFileSqlite(
       s.directory AS directory,
       m.id AS message_id,
       m.time_created AS message_time,
+      m.seq AS message_seq,
       json_extract(${partData}, '$.name') AS tool_name,
       ${toolPath(partData)} AS matched_file_path_tool,
       NULL AS matched_files_patch,
@@ -75,7 +76,7 @@ export function traceFileSqlite(
     UNION ALL
 
     SELECT
-      s.id, s.title, s.directory, m.id, m.time_created,
+      s.id, s.title, s.directory, m.id, m.time_created, m.seq,
       json_extract(${content}, '$.name'),
       ${toolPath(content)},
       NULL,
@@ -91,7 +92,7 @@ export function traceFileSqlite(
     UNION ALL
 
     SELECT
-      s.id, s.title, s.directory, m.id, m.time_created,
+      s.id, s.title, s.directory, m.id, m.time_created, m.seq,
       NULL,
       NULL,
       json_extract(${messageData}, '$.snapshot.files'),
@@ -113,6 +114,7 @@ export function traceFileSqlite(
     directory: string;
     message_id: string;
     message_time: number;
+    message_seq: number;
     tool_name: string | null;
     matched_file_path_tool: string | null;
     matched_files_patch: string | null;
@@ -123,6 +125,7 @@ export function traceFileSqlite(
     sessionID: string;
     sessionTitle: string;
     messageID: string;
+    messageSeq: number;
     timestamp: number;
     toolName: string | null;
     filePath: string;
@@ -157,6 +160,7 @@ export function traceFileSqlite(
         sessionID: row.session_id,
         sessionTitle: row.session_title ?? "",
         messageID: row.message_id,
+        messageSeq: row.message_seq,
         timestamp: row.message_time,
         toolName: row.tool_name,
         filePath: matchedPath,
@@ -188,15 +192,17 @@ export function traceFileSqlite(
     }
   }
 
-  // Lookup user prompts: in OpenCode 2 the prompt text is on the user message itself.
+  // Lookup user prompts: in OpenCode 2 the prompt text is on the user message
+  // itself. Messages are ordered by seq, their position in the session, since
+  // a prompt and its reply can share a millisecond.
   const findUserPrompt = db.query(`
-    SELECT json_extract(data, '$.text') AS text
+    SELECT json_extract(CASE WHEN json_valid(data) THEN data END, '$.text') AS text
     FROM session_message
     WHERE session_id = ?
       AND type = 'user'
-      AND time_created < ?
+      AND seq < ?
       AND json_valid(data)
-    ORDER BY time_created DESC
+    ORDER BY seq DESC
     LIMIT 1
   `);
 
@@ -208,7 +214,7 @@ export function traceFileSqlite(
     .filter((c) => inDateRange(c.timestamp, options?.dateRange))
     .slice(0, limit)
     .map((c): FileTraceResult => {
-      const promptRow = findUserPrompt.get(c.sessionID, c.timestamp) as { text: string } | undefined;
+      const promptRow = findUserPrompt.get(c.sessionID, c.messageSeq) as { text: string } | undefined;
       return {
         sessionID: c.sessionID,
         sessionTitle: c.sessionTitle,

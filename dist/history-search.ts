@@ -1793,6 +1793,7 @@ function traceFileSqlite(db, projectID, queryPath, options) {
       s.directory AS directory,
       m.id AS message_id,
       m.time_created AS message_time,
+      m.seq AS message_seq,
       json_extract(${partData}, '$.name') AS tool_name,
       ${toolPath(partData)} AS matched_file_path_tool,
       NULL AS matched_files_patch,
@@ -1808,7 +1809,7 @@ function traceFileSqlite(db, projectID, queryPath, options) {
     UNION ALL
 
     SELECT
-      s.id, s.title, s.directory, m.id, m.time_created,
+      s.id, s.title, s.directory, m.id, m.time_created, m.seq,
       json_extract(${content}, '$.name'),
       ${toolPath(content)},
       NULL,
@@ -1824,7 +1825,7 @@ function traceFileSqlite(db, projectID, queryPath, options) {
     UNION ALL
 
     SELECT
-      s.id, s.title, s.directory, m.id, m.time_created,
+      s.id, s.title, s.directory, m.id, m.time_created, m.seq,
       NULL,
       NULL,
       json_extract(${messageData}, '$.snapshot.files'),
@@ -1865,6 +1866,7 @@ function traceFileSqlite(db, projectID, queryPath, options) {
         sessionID: row.session_id,
         sessionTitle: row.session_title ?? "",
         messageID: row.message_id,
+        messageSeq: row.message_seq,
         timestamp: row.message_time,
         toolName: row.tool_name,
         filePath: matchedPath
@@ -1890,18 +1892,18 @@ function traceFileSqlite(db, projectID, queryPath, options) {
     }
   }
   const findUserPrompt = db.query(`
-    SELECT json_extract(data, '$.text') AS text
+    SELECT json_extract(CASE WHEN json_valid(data) THEN data END, '$.text') AS text
     FROM session_message
     WHERE session_id = ?
       AND type = 'user'
-      AND time_created < ?
+      AND seq < ?
       AND json_valid(data)
-    ORDER BY time_created DESC
+    ORDER BY seq DESC
     LIMIT 1
   `);
   const limit = options?.limit ?? 50;
   return deduped.map((c, idx) => ({ ...c, firstTouch: idx === earliestIndex })).filter((c) => inDateRange(c.timestamp, options?.dateRange)).slice(0, limit).map((c) => {
-    const promptRow = findUserPrompt.get(c.sessionID, c.timestamp);
+    const promptRow = findUserPrompt.get(c.sessionID, c.messageSeq);
     return {
       sessionID: c.sessionID,
       sessionTitle: c.sessionTitle,
