@@ -1,164 +1,117 @@
 # Installation Guide
 
-## Quick Install (1 Command!)
+opencode-history-search is an OpenCode 2 plugin. Install it with **one** of the
+methods below; using more than one registers the tool twice. OpenCode reloads
+plugins when their config or files change, so there is no need to restart it.
 
-The easiest way to install opencode-history-search:
+## 1. OpenCode Config (Recommended)
+
+Let OpenCode add it to your global config:
+
+```bash
+opencode plugin add opencode-history-search
+```
+
+Or add it to `~/.config/opencode/opencode.json` yourself:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-history-search"]
+}
+```
+
+OpenCode installs the package and keeps it up to date.
+
+## 2. Quick Install (single file)
 
 ```bash
 npx opencode-history-search
-```
-
-Or with Bun:
-
-```bash
+# or
 bunx opencode-history-search
-```
-
-**That's it!** The installer will:
-
-- ✅ Detect your OpenCode directory
-- ✅ Copy the tool to `~/.opencode/tool/history-search.ts`
-- ✅ Create the description file `~/.opencode/tool/history-search.txt`
-- ✅ Show you usage examples
-
-Then restart OpenCode and start using it!
-
----
-
-## Installation Methods
-
-### 1. From npm (After Publishing)
-
-```bash
-npx opencode-history-search
-```
-
-### 2. From GitHub
-
-```bash
+# or, from GitHub
 npx github:joeyism/opencode-history-search
 ```
 
-### 3. From Local Repository
+The installer:
+
+- ✅ Copies the plugin to `~/.config/opencode/plugins/history-search.ts`
+  (`$XDG_CONFIG_HOME/opencode/plugins/` when set)
+- ✅ Warns if your global config also lists the package
+- ✅ Lists files left by the OpenCode v1 installer, which you can remove
+
+OpenCode loads any `.ts` file in that directory. The file has no dependencies,
+so nothing else needs installing.
+
+## 3. From a Local Clone
 
 ```bash
-# Clone the repository
 git clone https://github.com/joeyism/opencode-history-search.git
 cd opencode-history-search
-
-# Install dependencies and build
 bun install
 bun run build
+```
 
-# Run the installer
+Then either add the clone's absolute path to `plugins` in
+`~/.config/opencode/opencode.json`:
+
+```json
+{
+  "plugins": ["/home/me/opencode-history-search"]
+}
+```
+
+or copy the built file into your plugins directory:
+
+```bash
 bun run install:tool
 ```
 
-### 4. Global Installation (Optional)
-
-If you want to install it globally:
-
-```bash
-# Install globally
-npm install -g opencode-history-search
-
-# Then run the installer anytime
-opencode-history-search
-```
-
----
-
-## Manual Installation (Advanced)
-
-If you prefer to copy files manually:
-
-```bash
-# After cloning and building
-cp dist/history-search.ts ~/.opencode/tool/history-search.ts
-cp .opencode/tool-description.txt ~/.opencode/tool/history-search.txt
-```
-
-Or create the description manually:
-
-```bash
-cat > ~/.opencode/tool/history-search.txt << 'EOF'
-Search through past conversation histories in the current repository.
-
-Features:
-- Keyword search (exact matches)
-- Regex search (advanced patterns)
-- Fuzzy search (typo-tolerant matching)
-- Searches session titles, messages, tools, and file paths
-
-Examples:
-- "Search my history for 'storage'"
-- "Search for 'storag' using fuzzy mode" (finds "storage")
-EOF
-```
+When loading from the clone, OpenCode watches `dist/history-search.ts`, so
+`bun run build` is enough to pick up changes.
 
 ---
 
 ## Verification
 
-After installation, verify it worked:
-
-1. **Check the files exist:**
+1. **Check that OpenCode loaded it:**
 
    ```bash
-   ls -lh ~/.opencode/tool/history-search.*
+   grep history-search ~/.local/share/opencode/log/opencode.log | tail -5
    ```
 
-   You should see:
+   You should see `loading plugin` for it and no `failed to load plugin`; a
+   failure line carries the reason.
 
-   ```
-   ~/.opencode/tool/history-search.ts   (13KB)
-   ~/.opencode/tool/history-search.txt  (753 bytes)
+2. **Check that searching works** (from a clone, after `bun run build`):
+
+   ```bash
+   bun run verify-installation.ts
    ```
 
-2. **Restart OpenCode**
-
-3. **Test it:**
-
-   ```
-   You: Do you have a history search tool?
-   AI: Yes, I have access to the history-search tool...
-   ```
+3. **Try it in OpenCode:**
 
    ```
    You: Search my conversation history for "storage"
-   AI: <uses the tool and shows results>
+   AI: <uses the history-search tool and shows results>
    ```
 
 ---
 
 ## Troubleshooting
 
-### Installer can't find OpenCode directory
+### The tool does not show up
 
-The installer looks for:
+- Make sure you use OpenCode 2 (`opencode --version`). This version of the
+  plugin does not load in OpenCode v1.
+- Check the log for `failed to load plugin` next to `history-search`.
+- A plugin path configured in `opencode.json` must be a directory (the clone),
+  not a file.
 
-- `~/.opencode/tool/`
-- `~/.config/opencode/tool/`
+### The tool shows up twice
 
-If your OpenCode uses a different directory, install manually:
-
-```bash
-cp dist/history-search.ts /your/custom/path/.opencode/tool/history-search.ts
-```
-
-### Permission denied
-
-If you get permission errors:
-
-```bash
-chmod +x ~/.opencode/tool/history-search.ts
-```
-
-### Tool not showing up in OpenCode
-
-1. Verify the files are in the right place
-2. Restart OpenCode completely
-3. Check OpenCode's tool directory setting
+It is installed by more than one method. Keep either the `plugins` entry in
+`opencode.json` or `~/.config/opencode/plugins/history-search.ts`, not both.
 
 ### Build errors
 
@@ -168,55 +121,40 @@ Make sure you have Bun installed:
 curl -fsSL https://bun.sh/install | bash
 ```
 
-Or use npm/yarn:
+---
+
+## Upgrading from OpenCode v1
+
+OpenCode 2 no longer loads custom tools from `tool/` directories, so the files
+the old installer wrote are ignored. Remove them, then install again with one of
+the methods above:
 
 ```bash
-npm install
-npm run build
+rm -f ~/.opencode/tool/history-search.ts ~/.opencode/tool/history-search.txt
+rm -f ~/.config/opencode/tool/history-search.ts ~/.config/opencode/tool/history-search.txt
 ```
+
+Your v1 history stays searchable; see "Sessions from OpenCode v1" in the README.
 
 ---
 
 ## Updating
 
-To update to the latest version:
-
-```bash
-# Pull latest changes (if installed from git)
-cd opencode-history-search
-git pull
-bun run build
-
-# Run installer again
-bun run install:tool
-```
-
-Or with npx (will always get latest):
-
-```bash
-npx opencode-history-search@latest
-```
+- **Config:** OpenCode updates the package itself; `opencode plugin update`
+  forces it.
+- **Quick Install:** run `npx opencode-history-search@latest` again.
+- **Local clone:** `git pull && bun install && bun run build`, then
+  `bun run install:tool` again if you copied the file.
 
 ---
 
 ## Uninstallation
 
-To remove the tool:
+Remove whichever you installed:
 
 ```bash
-rm ~/.opencode/tool/history-search.ts
-rm ~/.opencode/tool/history-search.txt
+opencode plugin remove opencode-history-search
+rm ~/.config/opencode/plugins/history-search.ts
 ```
 
-Restart OpenCode and the tool will be gone.
-
----
-
-## Next Steps
-
-After installation, see [USAGE_IN_OPENCODE.md](./USAGE_IN_OPENCODE.md) for:
-
-- Usage examples
-- Search modes (keyword, regex, fuzzy)
-- Common use cases
-- Tips and best practices
+or delete the clone's path from `plugins` in `~/.config/opencode/opencode.json`.

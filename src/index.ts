@@ -1,4 +1,7 @@
-import { Plugin } from "@opencode/plugin";
+// Type-only: Plugin.define() just returns its argument, so the built file
+// has no runtime dependency and also works copied on its own into a
+// plugins/ directory, where @opencode/plugin cannot be resolved.
+import type { Plugin } from "@opencode/plugin";
 import { searchKeyword } from "./search/keyword";
 import { searchFuzzy } from "./search/fuzzy";
 import { parseDateFilter, filterByDate } from "./search/date-filter";
@@ -148,7 +151,7 @@ export async function runSearch(
   return formatResults(dateRange ? filterByDate(matches, dateRange) : matches);
 }
 
-export default Plugin.define({
+const plugin: Plugin.Plugin = {
   id: PLUGIN_ID,
   async setup(ctx) {
     await ctx.tool.transform((editor) => {
@@ -162,4 +165,6 @@ export default Plugin.define({
       });
     });
   },
-});
+};
+
+export default plugin;

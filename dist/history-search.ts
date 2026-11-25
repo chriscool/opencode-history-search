@@ -167,9 +167,6 @@ var init_storage_sqlite = __esm(() => {
   SEARCHABLE_MESSAGE_TYPES = ["user", "assistant"];
 });
 
-// src/index.ts
-import { Plugin } from "@opencode/plugin";
-
 // src/storage-provider.ts
 init_storage_sqlite();
 async function* listSessions(projectID) {
@@ -2237,7 +2234,7 @@ async function runSearch(args, currentProjectID) {
   });
   return formatResults(dateRange ? filterByDate(matches, dateRange) : matches);
 }
-var src_default = Plugin.define({
+var plugin = {
   id: PLUGIN_ID,
   async setup(ctx) {
     await ctx.tool.transform((editor) => {
@@ -2251,7 +2248,8 @@ var src_default = Plugin.define({
       });
     });
   }
-});
+};
+var src_default = plugin;
 export {
   runSearch,
   input,

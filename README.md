@@ -26,20 +26,28 @@ Search through your OpenCode conversation history across ALL projects or within 
 
 ## Installation
 
+Requires OpenCode 2. Pick one of the methods below: using more than one
+registers the tool twice. OpenCode reloads plugins when their config or files
+change, so there is no need to restart it.
+
 ### OpenCode Config (Recommended)
 
-Add to your OpenCode config (`~/.config/opencode/opencode.json`):
+Add the package to your global OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
+  "plugins": [
     "opencode-history-search"
   ]
 }
 ```
 
-Then restart OpenCode.
+Or let OpenCode add it for you:
+
+```bash
+opencode plugin add opencode-history-search
+```
 
 ### Quick Install
 
@@ -54,17 +62,30 @@ bunx opencode-history-search
 npx github:joeyism/opencode-history-search
 ```
 
-The installer copies the tool to `~/.opencode/tool/` and creates the description file. Then restart OpenCode.
+The installer copies the plugin to `~/.config/opencode/plugins/history-search.ts`
+(`$XDG_CONFIG_HOME/opencode/plugins/` when set), where OpenCode loads it
+automatically.
 
-### Manual Installation
+### From a Local Clone
 
 ```bash
 git clone https://github.com/joeyism/opencode-history-search.git
 cd opencode-history-search
 bun install
 bun run build
-bun run install:tool
 ```
+
+Then add the clone's absolute path to `plugins` in `~/.config/opencode/opencode.json`
+(for example `"plugins": ["/home/me/opencode-history-search"]`), or copy the
+built file into your plugins directory with `bun run install:tool`. OpenCode
+watches the built file, so after `bun run build` it reloads the plugin.
+
+### Upgrading from OpenCode v1
+
+OpenCode 2 no longer loads custom tools from `tool/` directories. If you used
+the old installer, remove `history-search.ts` and `history-search.txt` from
+`~/.opencode/tool/` or `~/.config/opencode/tool/`, then install again with one
+of the methods above. The installer lists any such leftover files it finds.
 
 ## Use Cases
 

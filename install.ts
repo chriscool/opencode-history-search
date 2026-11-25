@@ -1,95 +1,70 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdirSync, copyFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, copyFileSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
-const TOOL_DESCRIPTION = `Search through past conversation histories.
+// OpenCode 2 loads single-file plugins from the plugins/ directory of its
+// global config directory, and watches it, so no restart is needed.
+// OpenCode v1 custom tool directories (tool/) are no longer loaded.
 
-Parameters:
-- query: Search term (keyword, regex, or fuzzy). Required unless filePath provided.
-- searchAllProjects: boolean — set to true to search ALL projects on this machine. Default: false (current repo only).
-- filePath: Trace which sessions modified a specific file path.
-- mode: "keyword" (default) or "fuzzy" search.
-- regex: Treat query as regex pattern (keyword mode only).
-- caseSensitive: Case-sensitive search (keyword mode only).
-- fuzzyThreshold: Fuzzy match strictness 0.0-1.0 (default 0.4).
-- date: Filter by date (e.g., "today", "last 7 days", "YYYY-MM-DD", "YYYY-MM-DD to YYYY-MM-DD").
-- limit: Maximum number of results (default: 50).
-- role: Filter by "user" or "assistant" messages.
+function configDir(): string {
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode");
+}
 
-Searches:
-- Session titles
-- Message content (user and assistant messages)
-- Tool invocations (grep, edit, bash, read, etc.)
-- File paths mentioned or edited
-- Files modified in patch parts (find which sessions changed a file)
+/** Files left by the OpenCode v1 installer, which OpenCode 2 ignores. */
+function legacyFiles(): string[] {
+  return [join(homedir(), ".opencode", "tool"), join(configDir(), "tool")]
+    .flatMap((dir) => ["history-search.ts", "history-search.txt"].map((file) => join(dir, file)))
+    .filter((file) => existsSync(file));
+}
 
-Examples:
-- "Search across all my projects for auth code" (uses searchAllProjects: true)
-- "Search my history for 'storage' in this repo" (uses searchAllProjects: false, default)
-- "Search for 'storag' using fuzzy mode" (uses mode: "fuzzy")
-- "Find conversations about authentication globally" (uses searchAllProjects: true)
-- "Which sessions modified src/storage.ts?" (uses filePath)
-
-Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files).`;
-
-function getOpenCodeToolDir(): string {
-  const home = homedir();
-
-  const possiblePaths = [
-    join(home, ".opencode", "tool"),
-    join(home, ".config", "opencode", "tool"),
-  ];
-
-  for (const path of possiblePaths) {
-    if (existsSync(path)) {
-      return path;
-    }
-  }
-
-  const defaultPath = join(home, ".opencode", "tool");
-  console.log(`📁 Creating OpenCode tool directory: ${defaultPath}`);
-  mkdirSync(defaultPath, { recursive: true });
-  return defaultPath;
+/** True if the global config also loads the plugin, which would register it twice. */
+function configuredInConfig(): boolean {
+  return ["opencode.json", "opencode.jsonc"].some((name) => {
+    const file = join(configDir(), name);
+    return existsSync(file) && readFileSync(file, "utf8").includes("opencode-history-search");
+  });
 }
 
 function install() {
   console.log("🔍 OpenCode History Search Installer\n");
 
+  const sourcePath = join(import.meta.dir, "dist", "history-search.ts");
+  if (!existsSync(sourcePath)) {
+    console.error("❌ Error: dist/history-search.ts not found");
+    console.error("   Please run: bun run build");
+    process.exit(1);
+  }
+
   try {
-    const toolDir = getOpenCodeToolDir();
-    const scriptDir = import.meta.dir;
-
-    const sourcePath = join(scriptDir, "dist", "history-search.ts");
-    const targetPath = join(toolDir, "history-search.ts");
-    const descPath = join(toolDir, "history-search.txt");
-
-    if (!existsSync(sourcePath)) {
-      console.error("❌ Error: dist/history-search.ts not found");
-      console.error("   Please run: bun run build");
-      process.exit(1);
-    }
-
-    console.log(`📦 Installing to: ${toolDir}`);
-
+    const pluginDir = join(configDir(), "plugins");
+    mkdirSync(pluginDir, { recursive: true });
+    const targetPath = join(pluginDir, "history-search.ts");
     copyFileSync(sourcePath, targetPath);
-    console.log("✅ Copied history-search.ts");
-
-    writeFileSync(descPath, TOOL_DESCRIPTION);
-    console.log("✅ Created history-search.txt (tool description)");
-
-    console.log("\n🎉 Installation complete!");
-    console.log("\n📝 Usage:");
-    console.log(
-      "   Ask OpenCode: \"Search my conversation history for 'storage'\"",
-    );
-    console.log("   Or: \"Search for 'storag' using fuzzy mode\"");
-    console.log("\n💡 Restart OpenCode if it's currently running");
+    console.log(`✅ Installed ${targetPath}`);
   } catch (error) {
     console.error("\n❌ Installation failed:", error);
     process.exit(1);
   }
+
+  if (configuredInConfig()) {
+    console.log(
+      `\n⚠️  ${configDir()}/opencode.json also lists opencode-history-search.` +
+        "\n   Keep only one of the two, or the tool is registered twice.",
+    );
+  }
+
+  const legacy = legacyFiles();
+  if (legacy.length > 0) {
+    console.log("\n🧹 OpenCode 2 ignores these files from the OpenCode v1 installer; you can remove them:");
+    legacy.forEach((file) => console.log(`   ${file}`));
+  }
+
+  console.log("\n🎉 Installation complete! OpenCode picks up the plugin without a restart.");
+  console.log("\n📝 Usage:");
+  console.log("   Ask OpenCode: \"Search my conversation history for 'storage'\"");
+  console.log("   Or: \"Search for 'storag' using fuzzy mode\"");
 }
 
 install();
