@@ -1,7 +1,7 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 import type { Database } from "bun:sqlite";
 import { searchMultitermSqlite, searchMultiterm } from "./multiterm-sql";
-import { createV2Db, addSession, addUser, addAssistant, text, tool } from "../test-fixture";
+import { createV2Db, addSession, addUser, addAssistant, attachment, text, tool } from "../test-fixture";
 
 describe("searchMultitermSqlite (in-memory SQLite, OpenCode 2 schema)", () => {
   let db: Database;
@@ -51,6 +51,22 @@ describe("searchMultitermSqlite (in-memory SQLite, OpenCode 2 schema)", () => {
     // ses_h: assistant content stored inline by early 2.x releases
     addSession(db, { ...main, id: "ses_h", title: null, created: 1774800000000 });
     addAssistant(db, { id: "msg_h1", sessionID: "ses_h", time: 1774800000000, inline: [text("inline zeppelin notes")] });
+
+    // ses_j: what should and should not be searchable
+    addSession(db, { ...main, id: "ses_j", title: "Attachments and thinking", created: 1774900000000 });
+    addUser(db, {
+      id: "msg_j1", sessionID: "ses_j", time: 1774900000000,
+      text: "first line\nplease review the quokka plan",
+      files: [attachment("design-notes.md", "hello world", "file:///mock/main/docs/wombat.md")],
+    });
+    addAssistant(db, {
+      id: "msg_j2", sessionID: "ses_j", time: 1774900001000,
+      parts: [
+        { type: "reasoning", text: "private xylophone musings" },
+        tool("read", { path: "docs/design-notes.md" }, "line one\nmarmot output"),
+      ],
+      inline: [{ type: "reasoning", text: "inline xylophone musings" }],
+    });
   });
 
   afterAll(() => {
@@ -186,6 +202,35 @@ describe("searchMultitermSqlite (in-memory SQLite, OpenCode 2 schema)", () => {
   test("does not match an assistant message's model name", () => {
     const results = searchMultitermSqlite(db, "proj_main", ["claude-sonnet"]);
     expect(results).toHaveLength(0);
+  });
+
+  test("does not match the model's reasoning", () => {
+    expect(searchMultitermSqlite(db, "proj_main", ["xylophone"])).toHaveLength(0);
+  });
+
+  test("does not match the base64 content of an attachment", () => {
+    // "aGVsbG8" is the start of "hello world" in base64.
+    expect(searchMultitermSqlite(db, "proj_main", ["aGVsbG8"])).toHaveLength(0);
+  });
+
+  test("matches an attachment's name and URI", () => {
+    expect(searchMultitermSqlite(db, "proj_main", ["design-notes", "quokka"]).map((r) => r.sessionID)).toEqual(["ses_j"]);
+    expect(searchMultitermSqlite(db, "proj_main", ["wombat"]).map((r) => r.sessionID)).toEqual(["ses_j"]);
+  });
+
+  test("matches tool names, inputs and text output", () => {
+    const results = searchMultitermSqlite(db, "proj_main", ["marmot", "docs/design-notes.md"]);
+    expect(results.map((r) => r.sessionID)).toEqual(["ses_j"]);
+  });
+
+  test("takes excerpts from the text, not from the stored JSON", () => {
+    const [ses] = searchMultitermSqlite(db, "proj_main", ["quokka", "marmot"]);
+    for (const hit of ses!.termHits.values()) {
+      expect(hit.excerpt).not.toContain("\\n");
+      expect(hit.excerpt).not.toContain("\n");
+      expect(hit.excerpt).not.toContain('"text"');
+      expect(hit.excerpt).not.toContain('"state"');
+    }
   });
 
   test("async wrapper searchMultiterm is exported", () => {

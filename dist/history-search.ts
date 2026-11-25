@@ -1787,7 +1787,9 @@ function traceFileSqlite(db, projectID, queryPath, options) {
   const likePattern = `%${normalizedQuery}%`;
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
   const toolPath = (json) => `COALESCE(json_extract(${json}, '$.state.input.path'), json_extract(${json}, '$.state.input.filePath'))`;
-  const safeData = "CASE WHEN json_valid(m.data) THEN m.data ELSE '{}' END";
+  const partData = "(CASE WHEN json_valid(p.data) THEN p.data END)";
+  const messageData = "(CASE WHEN json_valid(m.data) THEN m.data END)";
+  const content = "(CASE WHEN c.type = 'object' THEN c.value END)";
   const sql = `
     SELECT
       s.id AS session_id,
@@ -1795,33 +1797,32 @@ function traceFileSqlite(db, projectID, queryPath, options) {
       s.directory AS directory,
       m.id AS message_id,
       m.time_created AS message_time,
-      json_extract(p.data, '$.name') AS tool_name,
-      ${toolPath("p.data")} AS matched_file_path_tool,
+      json_extract(${partData}, '$.name') AS tool_name,
+      ${toolPath(partData)} AS matched_file_path_tool,
       NULL AS matched_files_patch,
       0 AS source_priority
     FROM session_v2 s
     JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
     JOIN session_part p ON p.message_id = m.id
     WHERE p.type = 'tool'
-      AND json_valid(p.data)
-      AND json_extract(p.data, '$.name') IN ('write', 'edit')
-      AND ${toolPath("p.data")} LIKE ?
+      AND json_extract(${partData}, '$.name') IN ('write', 'edit')
+      AND ${toolPath(partData)} LIKE ?
       ${projectFilter}
 
     UNION ALL
 
     SELECT
       s.id, s.title, s.directory, m.id, m.time_created,
-      json_extract(c.value, '$.name'),
-      ${toolPath("c.value")},
+      json_extract(${content}, '$.name'),
+      ${toolPath(content)},
       NULL,
       0
     FROM session_v2 s
     JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
-    JOIN json_each(${safeData}, '$.content') c
-    WHERE json_extract(c.value, '$.type') = 'tool'
-      AND json_extract(c.value, '$.name') IN ('write', 'edit')
-      AND ${toolPath("c.value")} LIKE ?
+    JOIN json_each(COALESCE(${messageData}, '{}'), '$.content') c
+    WHERE json_extract(${content}, '$.type') = 'tool'
+      AND json_extract(${content}, '$.name') IN ('write', 'edit')
+      AND ${toolPath(content)} LIKE ?
       ${projectFilter}
 
     UNION ALL
@@ -1830,12 +1831,11 @@ function traceFileSqlite(db, projectID, queryPath, options) {
       s.id, s.title, s.directory, m.id, m.time_created,
       NULL,
       NULL,
-      json_extract(m.data, '$.snapshot.files'),
+      json_extract(${messageData}, '$.snapshot.files'),
       1
     FROM session_v2 s
     JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
-    WHERE json_valid(m.data)
-      AND json_extract(m.data, '$.snapshot.files') LIKE ?
+    WHERE json_extract(${messageData}, '$.snapshot.files') LIKE ?
       ${projectFilter}
     ORDER BY message_time DESC, source_priority ASC
   `;
@@ -1941,32 +1941,57 @@ async function traceFile(projectID, filePath, options) {
 }
 
 // src/search/multiterm-sql.ts
+var contentText = (item) => `
+  CASE json_extract(${item}, '$.type')
+    WHEN 'text' THEN json_extract(${item}, '$.text')
+    WHEN 'tool' THEN
+      COALESCE(json_extract(${item}, '$.name'), '') || ' ' ||
+      COALESCE(json_extract(${item}, '$.state.input'), '') || ' ' ||
+      COALESCE((
+        SELECT group_concat(json_extract(CASE WHEN o.type = 'object' THEN o.value END, '$.text'), ' ')
+        FROM json_each(${item}, '$.state.content') o
+      ), '')
+  END`;
+var joined = (parts) => `NULLIF(TRIM(${parts.map((part) => `COALESCE(${part}, '')`).join(" || ' ' || ")}), '')`;
+var validData = "(CASE WHEN json_valid(data) THEN data END)";
+var item = "(CASE WHEN c.type = 'object' THEN c.value END)";
 var DOCUMENTS = `
   doc AS (
-    SELECT session_id, message_id || ':' || ordinal AS part_id, data, time_created
+    SELECT session_id, message_id || ':' || ordinal AS part_id, ${contentText(validData)} AS text, time_created
     FROM session_part
+    WHERE type IN ('text', 'tool')
     UNION ALL
     SELECT
       session_id,
       id AS part_id,
-      CASE
-        WHEN type = 'user' THEN data
-        WHEN json_valid(data) THEN
-          NULLIF(
-            COALESCE(json_extract(data, '$.content'), '') || ' ' ||
-              COALESCE(json_extract(data, '$.snapshot.files'), ''),
-            ' '
-          )
-      END AS data,
+      ${joined([
+  `json_extract(${validData}, '$.text')`,
+  `(SELECT group_concat(${joined([
+    `json_extract(${item}, '$.name')`,
+    `json_extract(${item}, '$.source.uri')`
+  ])}, ' ') FROM json_each(${validData}, '$.files') c)`
+])} AS text,
       time_created
     FROM session_message
-    WHERE type IN ('user', 'assistant')
+    WHERE type = 'user'
+    UNION ALL
+    SELECT
+      session_id,
+      id AS part_id,
+      ${joined([
+  `(SELECT group_concat(${contentText(item)}, ' ') FROM json_each(${validData}, '$.content') c)`,
+  `(SELECT group_concat(CASE WHEN c.type = 'text' THEN c.value END, ' ')
+          FROM json_each(${validData}, '$.snapshot.files') c)`
+])} AS text,
+      time_created
+    FROM session_message
+    WHERE type = 'assistant'
   )`;
 function buildMultitermSql(terms, projectID, options) {
   if (terms.length === 0) {
     throw new Error("terms array must contain at least one term");
   }
-  const conditions = terms.map((_, i) => `MAX(CASE WHEN d.data LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`).join(", ");
+  const conditions = terms.map((_, i) => `MAX(CASE WHEN d.text LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`).join(", ");
   const having = terms.map((_, i) => `match_${i} = 1`).join(" AND ");
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
   const dateFilter = options.dateRange ? "AND s.time_updated BETWEEN ? AND ?" : "";
@@ -2009,9 +2034,9 @@ function searchMultitermSqlite(db, projectID, terms, options) {
   const placeholder = rows.map(() => "?").join(",");
   const sqlFollow = `
     WITH ${DOCUMENTS}
-    SELECT session_id, part_id, data
+    SELECT session_id, part_id, text
     FROM doc
-    WHERE session_id IN (${placeholder}) AND data IS NOT NULL
+    WHERE session_id IN (${placeholder}) AND text IS NOT NULL
     ORDER BY time_created ASC
   `;
   const followRows = db.query(sqlFollow).all(...rows.map((r) => r.session_id));
@@ -2026,16 +2051,16 @@ function searchMultitermSqlite(db, projectID, terms, options) {
     for (const term of terms) {
       if (sessionMap.has(term))
         continue;
-      const lower = row.data.toLowerCase();
+      const lower = row.text.toLowerCase();
       const termLower = term.toLowerCase();
       if (lower.includes(termLower)) {
         const idx = lower.indexOf(termLower);
         const start = Math.max(0, idx - 50);
-        const end = Math.min(row.data.length, idx + termLower.length + 50);
+        const end = Math.min(row.text.length, idx + termLower.length + 50);
         sessionMap.set(term, {
           partID: row.part_id,
           matchType: "data",
-          excerpt: row.data.slice(start, end)
+          excerpt: row.text.slice(start, end).replace(/\s+/g, " ")
         });
       }
     }

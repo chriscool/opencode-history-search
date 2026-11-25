@@ -47,12 +47,25 @@ export function addSession(
   );
 }
 
-export function addUser(db: Database, message: { id: string; sessionID: string; time: number; text: string }) {
+/** Adds a user message. `files` are prompt attachments, such as `attachment()` builds. */
+export function addUser(
+  db: Database,
+  message: { id: string; sessionID: string; time: number; text: string; files?: Array<Record<string, unknown>> },
+) {
   insertMessage(db, message.id, message.sessionID, "user", message.time, JSON.stringify({
     text: message.text,
+    ...(message.files ? { files: message.files } : {}),
     time: { created: message.time },
   }));
 }
+
+/** A prompt attachment stored inline, with its content as base64 (Prompt.FileAttachment). */
+export const attachment = (name: string, content: string, uri?: string) => ({
+  data: Buffer.from(content).toString("base64"),
+  mime: "text/plain",
+  source: uri ? { type: "uri", uri } : { type: "inline" },
+  name,
+});
 
 /**
  * Adds an assistant message. `parts` go to session_part as current releases
