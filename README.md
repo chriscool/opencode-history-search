@@ -22,7 +22,7 @@ Search through your OpenCode conversation history across ALL projects or within 
 - **Global Search** - Search across ALL projects on your machine with `searchAllProjects: true`
 - **Project-Aware Results** - See which project directory each result came from
 - **Fast** - Single-term queries ~500ms; multi-term session-level AND ~1s (on 100k+ parts)
-- **SQLite + JSON Support** - Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files)
+- **OpenCode 2** - Reads the OpenCode 2 session store, including history migrated from OpenCode v1 (see [Sessions from OpenCode v1](#sessions-from-opencode-v1))
 
 ## Installation
 
@@ -140,7 +140,7 @@ Things you can ask OpenCode once this tool is installed:
 | ---------------- | ------------------------- | ----------- | ------------------------------------------------------ |
 | `searchAllProjects` | boolean                   | `false`     | Search ALL projects on this machine (set to `true` for global search) |
 | `query`          | string                    | _required_  | Search query (keyword, regex, or fuzzy term). Required unless `filePath` or `terms` is provided. |
-| `terms`          | string[]                  | _none_      | Array of terms to search for with AND semantics — returns sessions that contain ALL terms across any part. For 2+ terms. SQLite-only. |
+| `terms`          | string[]                  | _none_      | Array of terms to search for with AND semantics — returns sessions that contain ALL terms across any part. For 2+ terms. |
 | `filePath`       | string                    | _none_      | Trace touch history for a file path.                   |
 | `mode`           | `"keyword"` \| `"fuzzy"`  | `"keyword"` | Search mode                                            |
 | `regex`          | boolean                   | `false`     | Treat query as regex (keyword mode only)               |
@@ -197,7 +197,7 @@ Search for sessions that contain **all** of multiple concepts at once. Each term
 // (terms can be in different parts of the same session)
 ```
 
-Multi-term search is **session-level**: a session matches if all terms appear anywhere in its content, even across different messages. This is useful when you remember multiple concepts from a session but not a single connecting phrase. SQLite-only (uses single-query conditional aggregation for performance).
+Multi-term search is **session-level**: a session matches if all terms appear anywhere in its content, even across different messages. This is useful when you remember multiple concepts from a session but not a single connecting phrase. It runs as a single SQL query with conditional aggregation for performance.
 
 ## Date Filtering
 
@@ -269,30 +269,41 @@ Found 3 sessions in conversation history:
 
 ## How It Works
 
-1. **Storage**: Auto-detects SQLite (v1.2+) or JSON files (v1.1.x) — SQLite preferred when present
-2. **Project Scoping**: By default, scopes searches to current repository via git root commit hash. Set `searchAllProjects: true` to search across all projects.
+1. **Storage**: Reads OpenCode 2's SQLite database, read-only
+2. **Project Scoping**: By default, scopes searches to the OpenCode project the plugin is loaded in. Set `searchAllProjects: true` to search across all projects.
 3. **Indexing**: For fuzzy search, builds a searchable index of all content
 4. **Matching**: Applies chosen search algorithm (keyword, regex, or fuzzy)
 5. **Sorting**: Returns results sorted by timestamp (newest first)
 
 ## Storage Structure
 
-### OpenCode v1.2+ (SQLite)
-
 ```
-~/.local/share/opencode/opencode.db
-```
-
-### OpenCode v1.1.x (Legacy JSON)
-
-```
-~/.local/share/opencode/storage/
-├── session/{projectID}/ses_*.json
-├── message/{sessionID}/msg_*.json
-└── part/{messageID}/part_*.json
+~/.local/share/opencode/opencode.db   ($XDG_DATA_HOME/opencode/opencode.db)
+├── session_v2        # sessions
+├── session_message   # user prompts, assistant messages (with modified files)
+└── session_part      # assistant text and tool calls
 ```
 
-SQLite is used when `opencode.db` is present, otherwise falls back to JSON files.
+These are OpenCode's internal tables, not a public API. If an OpenCode release
+changes them, the queries to update are in `storage-sqlite.ts`,
+`search/file-trace.ts` and `search/multiterm-sql.ts`.
+
+### Sessions from OpenCode v1
+
+History from OpenCode v1 stays searchable, because OpenCode 2 migrates it into
+the tables above:
+
+- v1.2+ kept sessions in the same database, in `session`, `message` and `part`.
+  On first start OpenCode 2 copies them into its own tables and leaves the v1
+  tables as they were, so this plugin never reads them.
+- v1.1.x kept sessions as JSON files under `~/.local/share/opencode/storage/`.
+  v1.2+ moved them into its database when it started, and the files were left
+  behind, so they reach OpenCode 2 the same way.
+
+This plugin no longer reads the JSON files. The one case that loses history is
+going straight from v1.1.x to OpenCode 2 without ever running v1.2+: OpenCode 2
+migrates only v1's database, so those JSON-only sessions never reach it, and
+this plugin cannot find them either.
 
 ## Development
 
@@ -311,11 +322,12 @@ bun run build
 
 ```
 src/
-├── index.ts                  # Tool definition & main entry
+├── index.ts                  # Plugin definition, tool registration & main entry
 ├── format.ts                 # Output formatting (single-term, multi-term, file-trace)
-├── storage.ts                # JSON storage backend (v1.1.x)
-├── storage-sqlite.ts         # SQLite storage backend (v1.2+)
-├── storage-provider.ts       # Auto-detects backend, unified API
+├── storage.ts                # Session, message and part shapes used by the searches
+├── storage-sqlite.ts         # OpenCode 2 session store (read-only)
+├── storage-provider.ts       # Storage API used by keyword and fuzzy search
+├── test-fixture.ts           # In-memory OpenCode 2 database for tests
 └── search/
     ├── keyword.ts            # Keyword & regex search (single-term, per-part)
     ├── multiterm-sql.ts       # Multi-term AND search (session-level, SQL-based)

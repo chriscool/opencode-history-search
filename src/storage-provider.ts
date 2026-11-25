@@ -4,45 +4,26 @@ import {
   listMessagesSqlite,
   listPartsSqlite,
 } from "./storage-sqlite";
-import {
-  listSessions as listSessionsJSON,
-  listMessages as listMessagesJSON,
-  listParts as listPartsJSON,
-  getCurrentProjectID,
-  getStorageDir,
-} from "./storage";
 import type { Session, Message, Part } from "./storage";
 
-const useSqlite = dbExists();
+// OpenCode 2 always stores sessions in SQLite. Without a database there is
+// no history to search, so every listing is empty.
 
 export async function* listSessions(
   projectID: string | null,
 ): AsyncGenerator<Session> {
-  if (useSqlite) {
-    yield* listSessionsSqlite(projectID);
-  } else {
-    yield* listSessionsJSON(projectID);
-  }
+  if (dbExists()) yield* listSessionsSqlite(projectID);
 }
 
 export async function* listMessages(
   sessionID: string,
   role?: "user" | "assistant",
 ): AsyncGenerator<Message> {
-  if (useSqlite) {
-    yield* listMessagesSqlite(sessionID, role);
-  } else {
-    yield* listMessagesJSON(sessionID, role);
-  }
+  if (dbExists()) yield* listMessagesSqlite(sessionID, role);
 }
 
 export async function* listParts(messageID: string): AsyncGenerator<Part> {
-  if (useSqlite) {
-    yield* listPartsSqlite(messageID);
-  } else {
-    yield* listPartsJSON(messageID);
-  }
+  if (dbExists()) yield* listPartsSqlite(messageID);
 }
 
-export { getCurrentProjectID, getStorageDir };
 export type { Session, Message, Part };

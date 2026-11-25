@@ -1,51 +1,41 @@
 import { describe, test, expect } from "bun:test";
-import historySearch from "../src/index";
-import type { ToolContext } from "@opencode-ai/plugin";
+import { runSearch } from "../src/index";
 
-const tool = historySearch;
-
-const ctx: ToolContext = {
-  sessionID: "test",
-  messageID: "test",
-  agent: "test",
-  directory: process.cwd(),
-  worktree: process.cwd(),
-  abort: new AbortController().signal,
-  metadata: () => {},
-  ask: async () => {},
-};
+// These run against the real OpenCode database. Searches that are not global
+// are scoped to this project ID; set HISTORY_SEARCH_PROJECT_ID to one of yours.
+const projectID = process.env.HISTORY_SEARCH_PROJECT_ID ?? "global";
 
 describe("Global Search Integration Tests", () => {
   test("global search returns results", async () => {
-    const result = await tool.execute({
+    const result = await runSearch({
       query: "storage",
       searchAllProjects: true,
       limit: 5,
-    }, ctx);
+    }, projectID);
     expect(result).toContain("conversation history");
   });
 
   test("global search with date filter works", async () => {
-    const result = await tool.execute({
+    const result = await runSearch({
       query: "storage",
       searchAllProjects: true,
       date: "today",
       limit: 5,
-    }, ctx);
+    }, projectID);
     expect(result).toContain("conversation history");
   });
 
   test("global file trace works", async () => {
-    const result = await tool.execute({
+    const result = await runSearch({
       filePath: "src/storage.ts",
       searchAllProjects: true,
       limit: 5,
-    }, ctx);
+    }, projectID);
     expect(result).toContain("conversation history");
   });
 
   test("scoped search still works (backward compatibility)", async () => {
-    const result = await tool.execute({ query: "storage", limit: 5 }, ctx);
+    const result = await runSearch({ query: "storage", limit: 5 }, projectID);
     expect(result).toContain("conversation history");
   });
 });

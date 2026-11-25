@@ -29,55 +29,77 @@ export function traceFileSqlite(
 
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
 
+  // OpenCode 2 sources, newest first, tool calls before snapshots:
+  //   0. `write`/`edit` tool calls in session_part. 2.x names the input `path`;
+  //      sessions migrated from v1 keep `filePath`.
+  //   0. the same, held inline in session_message.data.content by early 2.x.
+  //   1. files an assistant step modified (`snapshot.files`, relative paths),
+  //      which replace v1's patch parts and also cover the `patch` tool.
+  const toolPath = (json: string) =>
+    `COALESCE(json_extract(${json}, '$.state.input.path'), json_extract(${json}, '$.state.input.filePath'))`;
+  // json_each() rejects malformed JSON even when WHERE would filter the row out.
+  const safeData = "CASE WHEN json_valid(m.data) THEN m.data ELSE '{}' END";
+
   const sql = `
     SELECT
       s.id AS session_id,
       s.title AS session_title,
+      s.directory AS directory,
       m.id AS message_id,
       m.time_created AS message_time,
-      json_extract(p.data, '$.tool') AS tool_name,
-      json_extract(p.data, '$.state.input.filePath') AS matched_file_path_tool,
-      json_extract(p.data, '$.files') AS matched_files_patch,
+      json_extract(p.data, '$.name') AS tool_name,
+      ${toolPath("p.data")} AS matched_file_path_tool,
+      NULL AS matched_files_patch,
       0 AS source_priority
-    FROM session s
-    JOIN message m ON m.session_id = s.id
-    JOIN part p ON p.message_id = m.id
-    WHERE json_valid(p.data)
-      AND json_extract(m.data, '$.role') = 'assistant'
-      AND json_extract(p.data, '$.type') = 'tool'
-      AND json_extract(p.data, '$.tool') IN ('write', 'edit')
-      AND json_extract(p.data, '$.state.input.filePath') LIKE ?
+    FROM session_v2 s
+    JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
+    JOIN session_part p ON p.message_id = m.id
+    WHERE p.type = 'tool'
+      AND json_valid(p.data)
+      AND json_extract(p.data, '$.name') IN ('write', 'edit')
+      AND ${toolPath("p.data")} LIKE ?
       ${projectFilter}
-      
+
     UNION ALL
 
     SELECT
-      s.id AS session_id,
-      s.title AS session_title,
-      m.id AS message_id,
-      m.time_created AS message_time,
-      NULL AS tool_name,
-      NULL AS matched_file_path_tool,
-      p.data AS matched_files_patch,
-      1 AS source_priority
-    FROM session s
-    JOIN message m ON m.session_id = s.id
-    JOIN part p ON p.message_id = m.id
-    WHERE json_valid(p.data)
-      AND json_extract(m.data, '$.role') = 'assistant'
-      AND json_extract(p.data, '$.type') = 'patch'
-      AND json_extract(p.data, '$.files') LIKE ?
+      s.id, s.title, s.directory, m.id, m.time_created,
+      json_extract(c.value, '$.name'),
+      ${toolPath("c.value")},
+      NULL,
+      0
+    FROM session_v2 s
+    JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
+    JOIN json_each(${safeData}, '$.content') c
+    WHERE json_extract(c.value, '$.type') = 'tool'
+      AND json_extract(c.value, '$.name') IN ('write', 'edit')
+      AND ${toolPath("c.value")} LIKE ?
+      ${projectFilter}
+
+    UNION ALL
+
+    SELECT
+      s.id, s.title, s.directory, m.id, m.time_created,
+      NULL,
+      NULL,
+      json_extract(m.data, '$.snapshot.files'),
+      1
+    FROM session_v2 s
+    JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
+    WHERE json_valid(m.data)
+      AND json_extract(m.data, '$.snapshot.files') LIKE ?
       ${projectFilter}
     ORDER BY message_time DESC, source_priority ASC
   `;
 
-  const binds: Array<string> = projectID !== null
-    ? [likePattern, projectID, likePattern, projectID]
-    : [likePattern, likePattern];
+  const binds: Array<string> = [0, 1, 2].flatMap(() =>
+    projectID !== null ? [likePattern, projectID] : [likePattern],
+  );
 
   const rows = db.query(sql).all(...binds) as Array<{
     session_id: string;
-    session_title: string;
+    session_title: string | null;
+    directory: string;
     message_id: string;
     message_time: number;
     tool_name: string | null;
@@ -99,15 +121,16 @@ export function traceFileSqlite(
     let matchedPath: string | null = null;
     
     if (row.source_priority === 0 && row.matched_file_path_tool) {
-      if (isMatch(row.matched_file_path_tool, normalizedQuery, isExactPath)) {
-        matchedPath = row.matched_file_path_tool;
+      const toolPath = relativeTo(row.directory, row.matched_file_path_tool);
+      if (isMatch(toolPath, normalizedQuery, isExactPath)) {
+        matchedPath = toolPath;
       }
     } else if (row.source_priority === 1 && row.matched_files_patch) {
       try {
-        const parsed = JSON.parse(row.matched_files_patch);
-        if (Array.isArray(parsed.files)) {
-          for (const f of parsed.files) {
-            if (isMatch(f, normalizedQuery, isExactPath)) {
+        const files = JSON.parse(row.matched_files_patch);
+        if (Array.isArray(files)) {
+          for (const f of files) {
+            if (typeof f === "string" && isMatch(f, normalizedQuery, isExactPath)) {
               matchedPath = f;
               break;
             }
@@ -121,7 +144,7 @@ export function traceFileSqlite(
     if (matchedPath) {
       candidates.push({
         sessionID: row.session_id,
-        sessionTitle: row.session_title,
+        sessionTitle: row.session_title ?? "",
         messageID: row.message_id,
         timestamp: row.message_time,
         toolName: row.tool_name,
@@ -154,17 +177,15 @@ export function traceFileSqlite(
     }
   }
 
-  // Lookup user prompts
+  // Lookup user prompts: in OpenCode 2 the prompt text is on the user message itself.
   const findUserPrompt = db.query(`
-    SELECT json_extract(p.data, '$.text') AS text
-    FROM message m
-    JOIN part p ON p.message_id = m.id
-    WHERE m.session_id = ?
-      AND m.time_created < ?
-      AND json_valid(p.data)
-      AND json_extract(m.data, '$.role') = 'user'
-      AND json_extract(p.data, '$.type') = 'text'
-    ORDER BY m.time_created DESC
+    SELECT json_extract(data, '$.text') AS text
+    FROM session_message
+    WHERE session_id = ?
+      AND type = 'user'
+      AND time_created < ?
+      AND json_valid(data)
+    ORDER BY time_created DESC
     LIMIT 1
   `);
 
@@ -183,6 +204,13 @@ export function traceFileSqlite(
 
   const limit = options?.limit ?? 50;
   return results.slice(0, limit);
+}
+
+/** Strips the session directory, so absolute tool paths compare like the relative `snapshot.files`. */
+function relativeTo(directory: string, filePath: string): string {
+  const normalized = filePath.replace(/\\/g, "/");
+  const prefix = directory.replace(/\\/g, "/").replace(/\/$/, "") + "/";
+  return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized;
 }
 
 function isMatch(path: string, query: string, isExact: boolean): boolean {

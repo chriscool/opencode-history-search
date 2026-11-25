@@ -1,43 +1,33 @@
 import { describe, test, expect } from "bun:test";
-import historySearch from "../src/index";
-import type { ToolContext } from "@opencode-ai/plugin";
+import { runSearch } from "../src/index";
 
-const tool = historySearch;
-
-const ctx: ToolContext = {
-  sessionID: "test",
-  messageID: "test",
-  agent: "test",
-  directory: process.cwd(),
-  worktree: process.cwd(),
-  abort: new AbortController().signal,
-  metadata: () => {},
-  ask: async () => {},
-};
+// These run against the real OpenCode database. Searches that are not global
+// are scoped to this project ID; set HISTORY_SEARCH_PROJECT_ID to one of yours.
+const projectID = process.env.HISTORY_SEARCH_PROJECT_ID ?? "global";
 
 describe("Date Filtering Integration Tests", () => {
   test("filters results by 'today' (may have no matches)", async () => {
-    const result = await tool.execute({ query: "storage", date: "today" }, ctx);
+    const result = await runSearch({ query: "storage", date: "today" }, projectID);
     expect(result).toContain("conversation history");
   });
 
   test("filters results by 'yesterday'", async () => {
-    const result = await tool.execute({ query: "storage", date: "yesterday" }, ctx);
+    const result = await runSearch({ query: "storage", date: "yesterday" }, projectID);
     expect(result).toContain("conversation history");
   });
 
   test("filters results by 'last 7 days'", async () => {
-    const result = await tool.execute({ query: "storage", date: "last 7 days" }, ctx);
+    const result = await runSearch({ query: "storage", date: "last 7 days" }, projectID);
     expect(result).toContain("conversation history");
   });
 
   test("filters results by 'last 30 days'", async () => {
-    const result = await tool.execute({ query: "storage", date: "last 30 days", limit: 5 }, ctx);
+    const result = await runSearch({ query: "storage", date: "last 30 days", limit: 5 }, projectID);
     expect(result).toContain("conversation history");
   });
 
   test("filters results by specific month YYYY-MM", async () => {
-    const result = await tool.execute({ query: "storage", date: "2026-01" }, ctx);
+    const result = await runSearch({ query: "storage", date: "2026-01" }, projectID);
     expect(result).toContain("conversation history");
     if (!result.includes("No matches")) {
       expect(result).toContain("2026-01");
@@ -45,7 +35,7 @@ describe("Date Filtering Integration Tests", () => {
   });
 
   test("filters results by specific date YYYY-MM-DD", async () => {
-    const result = await tool.execute({ query: "storage", date: "2026-02-01" }, ctx);
+    const result = await runSearch({ query: "storage", date: "2026-02-01" }, projectID);
     expect(result).toContain("conversation history");
     if (!result.includes("No matches")) {
       expect(result).toContain("2026-02-01");
@@ -53,33 +43,33 @@ describe("Date Filtering Integration Tests", () => {
   });
 
   test("filters results by date range", async () => {
-    const result = await tool.execute({ query: "storage", date: "2026-01-01 to 2026-02-01" }, ctx);
+    const result = await runSearch({ query: "storage", date: "2026-01-01 to 2026-02-01" }, projectID);
     expect(result).toContain("conversation history");
   });
 
   test("handles date filter with fuzzy search", async () => {
-    const result = await tool.execute({
+    const result = await runSearch({
       query: "storag",
       mode: "fuzzy",
       date: "last 30 days",
       limit: 5,
-    }, ctx);
+    }, projectID);
     expect(result).toContain("conversation history");
   });
 
   test("returns no matches for future dates", async () => {
-    const result = await tool.execute({ query: "storage", date: "2030-01-01" }, ctx);
+    const result = await runSearch({ query: "storage", date: "2030-01-01" }, projectID);
     expect(result).toContain("No matches found");
   });
 
   test("throws error for invalid date format", async () => {
     await expect(
-      tool.execute({ query: "storage", date: "invalid date" }, ctx),
+      runSearch({ query: "storage", date: "invalid date" }, projectID),
     ).rejects.toThrow(/Unrecognized date filter format/);
   });
 
   test("works without date filter (backward compatibility)", async () => {
-    const result = await tool.execute({ query: "storage", limit: 5 }, ctx);
+    const result = await runSearch({ query: "storage", limit: 5 }, projectID);
     expect(result).toContain("conversation history");
   });
 });

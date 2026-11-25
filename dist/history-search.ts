@@ -19,11 +19,13 @@ var __require = import.meta.require;
 // src/storage-sqlite.ts
 var exports_storage_sqlite = {};
 __export(exports_storage_sqlite, {
+  toolOutput: () => toolOutput,
   listSessionsSqlite: () => listSessionsSqlite,
   listPartsSqlite: () => listPartsSqlite,
   listMessagesSqlite: () => listMessagesSqlite,
   getDbPath: () => getDbPath,
-  dbExists: () => dbExists
+  dbExists: () => dbExists,
+  SEARCHABLE_MESSAGE_TYPES: () => SEARCHABLE_MESSAGE_TYPES
 });
 import { Database } from "bun:sqlite";
 import path from "path";
@@ -46,16 +48,15 @@ async function* listSessionsSqlite(projectID, db) {
   const shouldClose = db === undefined;
   const _db = db ?? openDb();
   try {
-    const rows = projectID ? _db.query(`SELECT id, project_id, title, directory, time_created, time_updated
-               FROM session WHERE project_id = ?
-               ORDER BY time_updated DESC`).all(projectID) : _db.query(`SELECT id, project_id, title, directory, time_created, time_updated
-               FROM session
-               ORDER BY time_updated DESC`).all();
+    const projectFilter = projectID !== null ? "WHERE project_id = ?" : "";
+    const rows = _db.query(`SELECT id, project_id, title, directory, time_created, time_updated
+         FROM session_v2 ${projectFilter}
+         ORDER BY time_updated DESC`).all(...projectID !== null ? [projectID] : []);
     for (const row of rows) {
       yield {
         id: row.id,
         projectID: row.project_id,
-        title: row.title,
+        title: row.title ?? "",
         directory: row.directory,
         time: { created: row.time_created, updated: row.time_updated }
       };
@@ -65,192 +66,123 @@ async function* listSessionsSqlite(projectID, db) {
       _db.close();
   }
 }
-async function* listMessagesSqlite(sessionID, role) {
-  const db = openDb();
+async function* listMessagesSqlite(sessionID, role, db) {
+  const shouldClose = db === undefined;
+  const _db = db ?? openDb();
   try {
-    const rows = db.query(`SELECT id, session_id, time_created, data
-         FROM message WHERE session_id = ?
-         ORDER BY time_created ASC`).all(sessionID);
+    const types = role ? [role] : [...SEARCHABLE_MESSAGE_TYPES];
+    const rows = _db.query(`SELECT id, session_id, type, time_created, data
+         FROM session_message
+         WHERE session_id = ? AND type IN (${types.map(() => "?").join(",")})
+         ORDER BY seq ASC`).all(sessionID, ...types);
     for (const row of rows) {
-      const data = JSON.parse(row.data);
-      if (role && data.role !== role)
-        continue;
       yield {
         id: row.id,
         sessionID: row.session_id,
-        role: data.role,
-        agent: data.agent || "",
+        role: row.type,
+        agent: row.type === "assistant" ? parseJson(row.data)?.agent ?? "" : "user",
         time: { created: row.time_created }
       };
     }
   } finally {
-    db.close();
+    if (shouldClose)
+      _db.close();
   }
 }
-async function* listPartsSqlite(messageID) {
-  const db = openDb();
+async function* listPartsSqlite(messageID, db) {
+  const shouldClose = db === undefined;
+  const _db = db ?? openDb();
   try {
-    const rows = db.query(`SELECT id, message_id, session_id, data
-         FROM part WHERE message_id = ?
-         ORDER BY time_created ASC`).all(messageID);
-    for (const row of rows) {
-      const data = JSON.parse(row.data);
-      const type = data.type === "text" ? "text" : data.type === "tool" ? "tool" : data.type === "file" ? "file" : data.type === "patch" ? "patch" : null;
-      if (!type)
-        continue;
-      const part = {
-        id: row.id,
-        messageID: row.message_id,
-        sessionID: row.session_id,
-        type
-      };
-      if (type === "text") {
-        part.text = data.text;
-      } else if (type === "tool") {
-        part.tool = data.tool;
-        part.state = data.state;
-      } else if (type === "patch") {
-        part.files = data.files;
+    const message = _db.query(`SELECT session_id, type, data FROM session_message WHERE id = ?`).get(messageID);
+    if (!message)
+      return;
+    const data = parseJson(message.data);
+    if (!data)
+      return;
+    const base = { messageID, sessionID: message.session_id };
+    if (message.type === "user") {
+      if (typeof data.text === "string" && data.text) {
+        yield { ...base, id: messageID, type: "text", text: data.text };
       }
-      yield part;
+      return;
+    }
+    if (message.type !== "assistant")
+      return;
+    const rows = _db.query(`SELECT ordinal, data FROM session_part
+         WHERE message_id = ? ORDER BY ordinal ASC`).all(messageID);
+    const stored = rows.flatMap((row) => {
+      const content = parseJson(row.data);
+      return content ? [{ id: `${messageID}:${row.ordinal}`, content }] : [];
+    });
+    const inline = Array.isArray(data.content) ? data.content.map((content, index) => ({
+      id: `${messageID}:inline:${index}`,
+      content
+    })) : [];
+    for (const entry of [...stored, ...inline]) {
+      const part = toPart(entry.content);
+      if (part)
+        yield { ...base, ...part, id: entry.id };
+    }
+    const files = data.snapshot?.files;
+    if (Array.isArray(files) && files.length > 0) {
+      yield { ...base, id: `${messageID}:snapshot`, type: "patch", files };
     }
   } finally {
-    db.close();
+    if (shouldClose)
+      _db.close();
   }
 }
-var init_storage_sqlite = () => {};
+function toPart(content) {
+  if (content?.type === "text" && typeof content.text === "string") {
+    return { type: "text", text: content.text };
+  }
+  if (content?.type === "tool" && typeof content.name === "string") {
+    return {
+      type: "tool",
+      tool: content.name,
+      state: {
+        input: content.state?.input,
+        output: toolOutput(content.state?.content),
+        title: content.name
+      }
+    };
+  }
+  return;
+}
+function toolOutput(content) {
+  if (!Array.isArray(content))
+    return "";
+  return content.flatMap((item) => item?.type === "text" && typeof item.text === "string" ? [item.text] : []).join(`
+`);
+}
+function parseJson(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return;
+  }
+}
+var SEARCHABLE_MESSAGE_TYPES;
+var init_storage_sqlite = __esm(() => {
+  SEARCHABLE_MESSAGE_TYPES = ["user", "assistant"];
+});
 
 // src/index.ts
-import { tool } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode/plugin";
 
 // src/storage-provider.ts
 init_storage_sqlite();
-
-// src/storage.ts
-import path2 from "path";
-import os2 from "os";
-import fs from "fs";
-var {Glob } = globalThis.Bun;
-async function getStorageDir() {
-  const xdgData = process.env.XDG_DATA_HOME || path2.join(os2.homedir(), ".local", "share");
-  return path2.join(xdgData, "opencode", "storage");
-}
-async function getCurrentProjectID() {
-  const proc = Bun.spawn(["git", "rev-list", "--max-parents=0", "--all"], {
-    stdout: "pipe",
-    stderr: "pipe"
-  });
-  const output = await new Response(proc.stdout).text();
-  const commits = output.split(`
-`).filter(Boolean).sort();
-  return commits[0] || "global";
-}
 async function* listSessions(projectID) {
-  const storageDir = await getStorageDir();
-  const sessionDir = path2.join(storageDir, "session");
-  if (projectID !== null) {
-    const projectDir = path2.join(sessionDir, projectID);
-    try {
-      for await (const file of new Glob("*.json").scan({ cwd: projectDir })) {
-        try {
-          const content = await Bun.file(path2.join(projectDir, file)).json();
-          yield content;
-        } catch {
-          continue;
-        }
-      }
-    } catch {
-      return;
-    }
-    return;
-  }
-  let entries;
-  try {
-    entries = fs.readdirSync(sessionDir);
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    const projectDir = path2.join(sessionDir, entry);
-    let stat;
-    try {
-      stat = fs.statSync(projectDir);
-    } catch {
-      continue;
-    }
-    if (!stat.isDirectory())
-      continue;
-    try {
-      for await (const file of new Glob("*.json").scan({ cwd: projectDir })) {
-        try {
-          const content = await Bun.file(path2.join(projectDir, file)).json();
-          yield content;
-        } catch {
-          continue;
-        }
-      }
-    } catch {
-      continue;
-    }
-  }
+  if (dbExists())
+    yield* listSessionsSqlite(projectID);
 }
 async function* listMessages(sessionID, role) {
-  const storageDir = await getStorageDir();
-  const messageDir = path2.join(storageDir, "message", sessionID.trim());
-  try {
-    for await (const file of new Glob("*.json").scan({ cwd: messageDir })) {
-      try {
-        const content = await Bun.file(path2.join(messageDir, file)).json();
-        if (role && content.role !== role)
-          continue;
-        yield content;
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return;
-  }
+  if (dbExists())
+    yield* listMessagesSqlite(sessionID, role);
 }
 async function* listParts(messageID) {
-  const storageDir = await getStorageDir();
-  const partDir = path2.join(storageDir, "part", messageID.trim());
-  try {
-    for await (const file of new Glob("*.json").scan({ cwd: partDir })) {
-      try {
-        const content = await Bun.file(path2.join(partDir, file)).json();
-        yield content;
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return;
-  }
-}
-
-// src/storage-provider.ts
-var useSqlite = dbExists();
-async function* listSessions2(projectID) {
-  if (useSqlite) {
-    yield* listSessionsSqlite(projectID);
-  } else {
-    yield* listSessions(projectID);
-  }
-}
-async function* listMessages2(sessionID, role) {
-  if (useSqlite) {
-    yield* listMessagesSqlite(sessionID, role);
-  } else {
-    yield* listMessages(sessionID, role);
-  }
-}
-async function* listParts2(messageID) {
-  if (useSqlite) {
+  if (dbExists())
     yield* listPartsSqlite(messageID);
-  } else {
-    yield* listParts(messageID);
-  }
 }
 
 // src/search/keyword.ts
@@ -258,7 +190,7 @@ async function searchKeyword(projectID, query, options = {}) {
   const results = [];
   const pattern = options.regex ? new RegExp(query, options.caseSensitive ? "" : "i") : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), options.caseSensitive ? "" : "i");
   const limit = options.limit || 50;
-  for await (const session of listSessions2(projectID)) {
+  for await (const session of listSessions(projectID)) {
     if (results.length >= limit)
       break;
     if (pattern.test(session.title)) {
@@ -274,10 +206,10 @@ async function searchKeyword(projectID, query, options = {}) {
       if (results.length >= limit)
         break;
     }
-    for await (const message of listMessages2(session.id, options.role)) {
+    for await (const message of listMessages(session.id, options.role)) {
       if (results.length >= limit)
         break;
-      for await (const part of listParts2(message.id)) {
+      for await (const part of listParts(message.id)) {
         if (results.length >= limit)
           break;
         if (part.type === "text" && part.text && pattern.test(part.text)) {
@@ -438,14 +370,14 @@ class KeyStore {
   }
 }
 function createKey(key) {
-  let path3 = null;
+  let path2 = null;
   let id = null;
   let src = null;
   let weight = 1;
   let getFn = null;
   if (isString(key) || isArray(key)) {
     src = key;
-    path3 = createKeyPath(key);
+    path2 = createKeyPath(key);
     id = createKeyId(key);
   } else {
     if (!hasOwn.call(key, "name")) {
@@ -459,11 +391,11 @@ function createKey(key) {
         throw new Error(INVALID_KEY_WEIGHT_VALUE(name));
       }
     }
-    path3 = createKeyPath(name);
+    path2 = createKeyPath(name);
     id = createKeyId(name);
     getFn = key.getFn;
   }
-  return { path: path3, id, weight, src, getFn };
+  return { path: path2, id, weight, src, getFn };
 }
 function createKeyPath(key) {
   return isArray(key) ? key : key.split(".");
@@ -471,34 +403,34 @@ function createKeyPath(key) {
 function createKeyId(key) {
   return isArray(key) ? key.join(".") : key;
 }
-function get(obj, path3) {
+function get(obj, path2) {
   let list = [];
   let arr = false;
-  const deepGet = (obj2, path4, index) => {
+  const deepGet = (obj2, path3, index) => {
     if (!isDefined(obj2)) {
       return;
     }
-    if (!path4[index]) {
+    if (!path3[index]) {
       list.push(obj2);
     } else {
-      let key = path4[index];
+      let key = path3[index];
       const value = obj2[key];
       if (!isDefined(value)) {
         return;
       }
-      if (index === path4.length - 1 && (isString(value) || isNumber(value) || isBoolean(value))) {
+      if (index === path3.length - 1 && (isString(value) || isNumber(value) || isBoolean(value))) {
         list.push(toString(value));
       } else if (isArray(value)) {
         arr = true;
         for (let i = 0, len = value.length;i < len; i += 1) {
-          deepGet(value[i], path4, index + 1);
+          deepGet(value[i], path3, index + 1);
         }
-      } else if (path4.length) {
-        deepGet(value, path4, index + 1);
+      } else if (path3.length) {
+        deepGet(value, path3, index + 1);
       }
     }
   };
-  deepGet(obj, isString(path3) ? path3.split(".") : path3, 0);
+  deepGet(obj, isString(path2) ? path2.split(".") : path2, 0);
   return arr ? list : list[0];
 }
 var MatchOptions = {
@@ -1666,7 +1598,7 @@ async function searchFuzzy(projectID, query, options = {}) {
   const limit = options.limit ?? 50;
   const items = [];
   try {
-    for await (const session of listSessions2(projectID)) {
+    for await (const session of listSessions(projectID)) {
       items.push({
         session,
         content: session.title,
@@ -1674,9 +1606,9 @@ async function searchFuzzy(projectID, query, options = {}) {
         timestamp: session.time.updated
       });
       try {
-        for await (const message of listMessages2(session.id, options.role)) {
+        for await (const message of listMessages(session.id, options.role)) {
           try {
-            for await (const part of listParts2(message.id)) {
+            for await (const part of listParts(message.id)) {
               if (part.type === "text" && part.text) {
                 items.push({
                   session,
@@ -1703,10 +1635,10 @@ async function searchFuzzy(projectID, query, options = {}) {
                 const combined = inputStr + " " + outputStr;
                 const pathMatches = combined.match(/(?:\/[^/\s]+)+/g);
                 if (pathMatches) {
-                  for (const path3 of pathMatches) {
+                  for (const path2 of pathMatches) {
                     items.push({
                       session,
-                      content: path3,
+                      content: path2,
                       type: "filepath",
                       messageID: message.id,
                       partID: part.id,
@@ -1856,62 +1788,75 @@ function traceFileSqlite(db, projectID, queryPath, options) {
   const isExactPath = normalizedQuery.includes("/");
   const likePattern = `%${normalizedQuery}%`;
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
+  const toolPath = (json) => `COALESCE(json_extract(${json}, '$.state.input.path'), json_extract(${json}, '$.state.input.filePath'))`;
+  const safeData = "CASE WHEN json_valid(m.data) THEN m.data ELSE '{}' END";
   const sql = `
     SELECT
       s.id AS session_id,
       s.title AS session_title,
+      s.directory AS directory,
       m.id AS message_id,
       m.time_created AS message_time,
-      json_extract(p.data, '$.tool') AS tool_name,
-      json_extract(p.data, '$.state.input.filePath') AS matched_file_path_tool,
-      json_extract(p.data, '$.files') AS matched_files_patch,
+      json_extract(p.data, '$.name') AS tool_name,
+      ${toolPath("p.data")} AS matched_file_path_tool,
+      NULL AS matched_files_patch,
       0 AS source_priority
-    FROM session s
-    JOIN message m ON m.session_id = s.id
-    JOIN part p ON p.message_id = m.id
-    WHERE json_valid(p.data)
-      AND json_extract(m.data, '$.role') = 'assistant'
-      AND json_extract(p.data, '$.type') = 'tool'
-      AND json_extract(p.data, '$.tool') IN ('write', 'edit')
-      AND json_extract(p.data, '$.state.input.filePath') LIKE ?
+    FROM session_v2 s
+    JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
+    JOIN session_part p ON p.message_id = m.id
+    WHERE p.type = 'tool'
+      AND json_valid(p.data)
+      AND json_extract(p.data, '$.name') IN ('write', 'edit')
+      AND ${toolPath("p.data")} LIKE ?
       ${projectFilter}
-      
+
     UNION ALL
 
     SELECT
-      s.id AS session_id,
-      s.title AS session_title,
-      m.id AS message_id,
-      m.time_created AS message_time,
-      NULL AS tool_name,
-      NULL AS matched_file_path_tool,
-      p.data AS matched_files_patch,
-      1 AS source_priority
-    FROM session s
-    JOIN message m ON m.session_id = s.id
-    JOIN part p ON p.message_id = m.id
-    WHERE json_valid(p.data)
-      AND json_extract(m.data, '$.role') = 'assistant'
-      AND json_extract(p.data, '$.type') = 'patch'
-      AND json_extract(p.data, '$.files') LIKE ?
+      s.id, s.title, s.directory, m.id, m.time_created,
+      json_extract(c.value, '$.name'),
+      ${toolPath("c.value")},
+      NULL,
+      0
+    FROM session_v2 s
+    JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
+    JOIN json_each(${safeData}, '$.content') c
+    WHERE json_extract(c.value, '$.type') = 'tool'
+      AND json_extract(c.value, '$.name') IN ('write', 'edit')
+      AND ${toolPath("c.value")} LIKE ?
+      ${projectFilter}
+
+    UNION ALL
+
+    SELECT
+      s.id, s.title, s.directory, m.id, m.time_created,
+      NULL,
+      NULL,
+      json_extract(m.data, '$.snapshot.files'),
+      1
+    FROM session_v2 s
+    JOIN session_message m ON m.session_id = s.id AND m.type = 'assistant'
+    WHERE json_valid(m.data)
+      AND json_extract(m.data, '$.snapshot.files') LIKE ?
       ${projectFilter}
     ORDER BY message_time DESC, source_priority ASC
   `;
-  const binds = projectID !== null ? [likePattern, projectID, likePattern, projectID] : [likePattern, likePattern];
+  const binds = [0, 1, 2].flatMap(() => projectID !== null ? [likePattern, projectID] : [likePattern]);
   const rows = db.query(sql).all(...binds);
   const candidates = [];
   for (const row of rows) {
     let matchedPath = null;
     if (row.source_priority === 0 && row.matched_file_path_tool) {
-      if (isMatch(row.matched_file_path_tool, normalizedQuery, isExactPath)) {
-        matchedPath = row.matched_file_path_tool;
+      const toolPath2 = relativeTo(row.directory, row.matched_file_path_tool);
+      if (isMatch(toolPath2, normalizedQuery, isExactPath)) {
+        matchedPath = toolPath2;
       }
     } else if (row.source_priority === 1 && row.matched_files_patch) {
       try {
-        const parsed = JSON.parse(row.matched_files_patch);
-        if (Array.isArray(parsed.files)) {
-          for (const f of parsed.files) {
-            if (isMatch(f, normalizedQuery, isExactPath)) {
+        const files = JSON.parse(row.matched_files_patch);
+        if (Array.isArray(files)) {
+          for (const f of files) {
+            if (typeof f === "string" && isMatch(f, normalizedQuery, isExactPath)) {
               matchedPath = f;
               break;
             }
@@ -1924,7 +1869,7 @@ function traceFileSqlite(db, projectID, queryPath, options) {
     if (matchedPath) {
       candidates.push({
         sessionID: row.session_id,
-        sessionTitle: row.session_title,
+        sessionTitle: row.session_title ?? "",
         messageID: row.message_id,
         timestamp: row.message_time,
         toolName: row.tool_name,
@@ -1951,15 +1896,13 @@ function traceFileSqlite(db, projectID, queryPath, options) {
     }
   }
   const findUserPrompt = db.query(`
-    SELECT json_extract(p.data, '$.text') AS text
-    FROM message m
-    JOIN part p ON p.message_id = m.id
-    WHERE m.session_id = ?
-      AND m.time_created < ?
-      AND json_valid(p.data)
-      AND json_extract(m.data, '$.role') = 'user'
-      AND json_extract(p.data, '$.type') = 'text'
-    ORDER BY m.time_created DESC
+    SELECT json_extract(data, '$.text') AS text
+    FROM session_message
+    WHERE session_id = ?
+      AND type = 'user'
+      AND time_created < ?
+      AND json_valid(data)
+    ORDER BY time_created DESC
     LIMIT 1
   `);
   const results = deduped.map((c, idx) => {
@@ -1977,11 +1920,16 @@ function traceFileSqlite(db, projectID, queryPath, options) {
   const limit = options?.limit ?? 50;
   return results.slice(0, limit);
 }
-function isMatch(path3, query, isExact) {
+function relativeTo(directory, filePath) {
+  const normalized = filePath.replace(/\\/g, "/");
+  const prefix = directory.replace(/\\/g, "/").replace(/\/$/, "") + "/";
+  return normalized.startsWith(prefix) ? normalized.slice(prefix.length) : normalized;
+}
+function isMatch(path2, query, isExact) {
   if (isExact) {
-    return path3 === query;
+    return path2 === query;
   }
-  return path3 === query || path3.endsWith(`/${query}`);
+  return path2 === query || path2.endsWith(`/${query}`);
 }
 async function traceFile(projectID, filePath, options) {
   const { Database: Database2 } = await import("bun:sqlite");
@@ -1995,17 +1943,39 @@ async function traceFile(projectID, filePath, options) {
 }
 
 // src/search/multiterm-sql.ts
+var DOCUMENTS = `
+  doc AS (
+    SELECT session_id, message_id || ':' || ordinal AS part_id, data, time_created
+    FROM session_part
+    UNION ALL
+    SELECT
+      session_id,
+      id AS part_id,
+      CASE
+        WHEN type = 'user' THEN data
+        WHEN json_valid(data) THEN
+          NULLIF(
+            COALESCE(json_extract(data, '$.content'), '') || ' ' ||
+              COALESCE(json_extract(data, '$.snapshot.files'), ''),
+            ' '
+          )
+      END AS data,
+      time_created
+    FROM session_message
+    WHERE type IN ('user', 'assistant')
+  )`;
 function buildMultitermSql(terms, projectID, options) {
   if (terms.length === 0) {
     throw new Error("terms array must contain at least one term");
   }
-  const conditions = terms.map((_, i) => `MAX(CASE WHEN p.data LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`).join(", ");
+  const conditions = terms.map((_, i) => `MAX(CASE WHEN d.data LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`).join(", ");
   const having = terms.map((_, i) => `match_${i} = 1`).join(" AND ");
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
   const sql = `
-    SELECT s.id AS session_id, s.title, s.directory, s.time_updated, ${conditions}
-    FROM session s
-    JOIN part p ON p.session_id = s.id
+    WITH ${DOCUMENTS}
+    SELECT s.id AS session_id, COALESCE(s.title, '') AS title, s.directory, s.time_updated, ${conditions}
+    FROM session_v2 s
+    JOIN doc d ON d.session_id = s.id
     WHERE 1=1
       ${projectFilter}
     GROUP BY s.id
@@ -2033,24 +2003,14 @@ function searchMultitermSqlite(db, projectID, terms, options) {
     return [];
   }
   const placeholder = rows.map(() => "?").join(",");
-  const sessionBinds = rows.map((r) => r.session_id);
-  const termConditions = [];
-  const allFollowBinds = [];
-  for (const term of terms) {
-    const escaped = term.replace(/[%_\\]/g, "\\$&");
-    termConditions.push("(data LIKE ? ESCAPE '\\' OR session_id IN (" + placeholder + "))");
-    allFollowBinds.push(`%${escaped}%`);
-    for (const sid of sessionBinds) {
-      allFollowBinds.push(sid);
-    }
-  }
   const sqlFollow = `
-    SELECT session_id, id AS part_id, data
-    FROM part
-    WHERE ${termConditions.join(" AND ")}
+    WITH ${DOCUMENTS}
+    SELECT session_id, part_id, data
+    FROM doc
+    WHERE session_id IN (${placeholder}) AND data IS NOT NULL
     ORDER BY time_created ASC
   `;
-  const followRows = db.query(sqlFollow).all(...allFollowBinds);
+  const followRows = db.query(sqlFollow).all(...rows.map((r) => r.session_id));
   const termHitsBySession = new Map;
   for (const row of followRows) {
     if (!termHitsBySession.has(row.session_id)) {
@@ -2178,86 +2138,125 @@ function formatMultitermResults(matches) {
 }
 
 // src/index.ts
-var historySearch = tool({
-  description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths.
+var PLUGIN_ID = "opencode-history-search";
+var TOOL_NAME = "history-search";
+var description = `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths.
 
 THREE SEARCH MODES:
 1. SINGLE-TERM (query): Pass query for one search term. Returns per-part matches. Use mode: "fuzzy" for typos, regex: true for patterns.
-2. MULTI-TERM AND (terms): Pass terms: ["term1", "term2", ...] to find sessions containing ALL terms anywhere in the session (across title, messages, tools, file paths). Returns one result per session with per-term excerpts. Use when the user remembers multiple concepts (e.g., "find sessions about truck, vertex, and gemini"). Requires 2+ terms. SQLite-only.
+2. MULTI-TERM AND (terms): Pass terms: ["term1", "term2", ...] to find sessions containing ALL terms anywhere in the session (across title, messages, tools, file paths). Returns one result per session with per-term excerpts. Use when the user remembers multiple concepts (e.g., "find sessions about truck, vertex, and gemini"). Requires 2+ terms.
 3. FILE TRACE (filePath): Pass filePath to find which sessions created or modified a specific file.
 
-Supports keyword search, regex patterns, fuzzy search, multi-term AND search, date filtering, and role filtering.`,
-  args: {
-    query: tool.schema.string().optional().describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath or terms is provided."),
-    terms: tool.schema.array(tool.schema.string()).optional().describe('Array of terms for multi-term AND search. Returns sessions containing ALL terms anywhere in the session (title, messages, tools, file paths). Use when the user wants sessions matching multiple concepts (e.g., ["truck", "vertex", "gemini"]). Requires 2+ terms for multi-term path; 1 term falls back to single-term query. SQLite-only. Case-insensitive substring matching.'),
-    filePath: tool.schema.string().optional().describe("File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."),
-    searchAllProjects: tool.schema.boolean().optional().describe("Set to true to search ALL projects on this machine across all repositories, not just the current one. Default: false (current repo only). Use when user asks to search globally, across all projects, machine-wide, or everywhere."),
-    mode: tool.schema.enum(["keyword", "fuzzy"]).optional().describe("Search mode: 'keyword' for exact matches, 'fuzzy' for typo-tolerant matching (default: keyword)"),
-    regex: tool.schema.boolean().optional().describe("Treat query as regex pattern (keyword mode only, default: false)"),
-    caseSensitive: tool.schema.boolean().optional().describe("Case-sensitive search (keyword mode only, default: false)"),
-    fuzzyThreshold: tool.schema.number().optional().describe("Fuzzy match threshold 0.0-1.0 (fuzzy mode only, default: 0.4, lower = stricter)"),
-    date: tool.schema.string().optional().describe("Filter by date: 'today', 'yesterday', 'last N days/weeks/months', 'YYYY-MM-DD', 'YYYY-MM', 'YYYY-MM-DD to YYYY-MM-DD'"),
-    limit: tool.schema.number().optional().describe("Maximum number of results (default: 50)"),
-    role: tool.schema.enum(["user", "assistant"]).optional().describe("Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided.")
+Supports keyword search, regex patterns, fuzzy search, multi-term AND search, date filtering, and role filtering.`;
+var input = {
+  type: "object",
+  properties: {
+    query: {
+      type: "string",
+      description: "Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath or terms is provided."
+    },
+    terms: {
+      type: "array",
+      items: { type: "string" },
+      description: 'Array of terms for multi-term AND search. Returns sessions containing ALL terms anywhere in the session (title, messages, tools, file paths). Use when the user wants sessions matching multiple concepts (e.g., ["truck", "vertex", "gemini"]). Requires 2+ terms for multi-term path; 1 term falls back to single-term query. Case-insensitive substring matching.'
+    },
+    filePath: {
+      type: "string",
+      description: "File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."
+    },
+    searchAllProjects: {
+      type: "boolean",
+      description: "Set to true to search ALL projects on this machine across all repositories, not just the current one. Default: false (current repo only). Use when user asks to search globally, across all projects, machine-wide, or everywhere."
+    },
+    mode: {
+      type: "string",
+      enum: ["keyword", "fuzzy"],
+      description: "Search mode: 'keyword' for exact matches, 'fuzzy' for typo-tolerant matching (default: keyword)"
+    },
+    regex: {
+      type: "boolean",
+      description: "Treat query as regex pattern (keyword mode only, default: false)"
+    },
+    caseSensitive: {
+      type: "boolean",
+      description: "Case-sensitive search (keyword mode only, default: false)"
+    },
+    fuzzyThreshold: {
+      type: "number",
+      description: "Fuzzy match threshold 0.0-1.0 (fuzzy mode only, default: 0.4, lower = stricter)"
+    },
+    date: {
+      type: "string",
+      description: "Filter by date: 'today', 'yesterday', 'last N days/weeks/months', 'YYYY-MM-DD', 'YYYY-MM', 'YYYY-MM-DD to YYYY-MM-DD'"
+    },
+    limit: {
+      type: "number",
+      description: "Maximum number of results (default: 50)"
+    },
+    role: {
+      type: "string",
+      enum: ["user", "assistant"],
+      description: "Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided."
+    }
   },
-  async execute(args) {
-    if (!args.query && !args.filePath && !args.terms) {
-      throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
+  additionalProperties: false
+};
+async function runSearch(args, currentProjectID) {
+  if (!args.query && !args.filePath && !args.terms) {
+    throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
+  }
+  const projectID = args.searchAllProjects ? null : currentProjectID;
+  const dateRange = args.date ? parseDateFilter(args.date) : undefined;
+  let query = args.query;
+  if (args.terms !== undefined) {
+    if (!Array.isArray(args.terms) || args.terms.length === 0) {
+      throw new Error("'terms' must be a non-empty array of strings.");
     }
-    if (args.terms !== undefined) {
-      if (!Array.isArray(args.terms) || args.terms.length === 0) {
-        throw new Error("'terms' must be a non-empty array of strings.");
-      }
-      if (args.terms.length === 1) {
-        args.query = args.terms[0];
-      } else {
-        const projectID2 = args.searchAllProjects ? null : await getCurrentProjectID();
-        let matches2 = await searchMultiterm(projectID2, args.terms, {
-          limit: args.limit
-        });
-        if (args.date) {
-          const dateRange = parseDateFilter(args.date);
-          matches2 = filterByDate(matches2, dateRange);
-        }
-        return formatMultitermResults(matches2);
-      }
+    if (args.terms.length > 1) {
+      const matches2 = await searchMultiterm(projectID, args.terms, { limit: args.limit });
+      return formatMultitermResults(dateRange ? filterByDate(matches2, dateRange) : matches2);
     }
-    const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
-    if (args.filePath) {
-      let matches2 = await traceFile(projectID, args.filePath, {
-        limit: args.limit
+    query = args.terms[0];
+  }
+  if (args.filePath) {
+    const matches2 = await traceFile(projectID, args.filePath, { limit: args.limit });
+    return formatTraceResults(dateRange ? filterByDate(matches2, dateRange) : matches2);
+  }
+  if (!query) {
+    throw new Error("'query' is required when 'filePath' is not provided.");
+  }
+  const matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, query, {
+    threshold: args.fuzzyThreshold,
+    limit: args.limit,
+    role: args.role
+  }) : await searchKeyword(projectID, query, {
+    regex: args.regex,
+    caseSensitive: args.caseSensitive,
+    limit: args.limit,
+    role: args.role
+  });
+  return formatResults(dateRange ? filterByDate(matches, dateRange) : matches);
+}
+var src_default = Plugin.define({
+  id: PLUGIN_ID,
+  async setup(ctx) {
+    await ctx.tool.transform((editor) => {
+      editor.add({
+        name: TOOL_NAME,
+        description,
+        input,
+        execute: async (args) => ({
+          content: await runSearch(args, ctx.location.project.id)
+        })
       });
-      if (args.date) {
-        const dateRange = parseDateFilter(args.date);
-        matches2 = filterByDate(matches2, dateRange);
-      }
-      return formatTraceResults(matches2);
-    }
-    if (!args.query) {
-      throw new Error("'query' is required when 'filePath' is not provided.");
-    }
-    let matches = args.mode === "fuzzy" ? await searchFuzzy(projectID, args.query, {
-      threshold: args.fuzzyThreshold,
-      limit: args.limit,
-      role: args.role
-    }) : await searchKeyword(projectID, args.query, {
-      regex: args.regex,
-      caseSensitive: args.caseSensitive,
-      limit: args.limit,
-      role: args.role
     });
-    if (args.date) {
-      const dateRange = parseDateFilter(args.date);
-      matches = filterByDate(matches, dateRange);
-    }
-    return formatResults(matches);
   }
 });
-historySearch.id = "opencode-history-search";
-historySearch.server = async (_input, _options) => ({
-  tool: { "history-search": historySearch }
-});
-var src_default = historySearch;
 export {
-  src_default as default
+  runSearch,
+  input,
+  description,
+  src_default as default,
+  TOOL_NAME,
+  PLUGIN_ID
 };

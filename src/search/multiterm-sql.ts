@@ -17,6 +17,36 @@ export interface MultitermSearchMatch {
   termHits: Map<string, { partID: string; matchType: string; excerpt: string }>;
 }
 
+/**
+ * Searchable OpenCode 2 session content, one row per document:
+ * assistant content in session_part, user prompts in session_message, and
+ * for each assistant message the files it modified plus any content early
+ * 2.x releases kept inline. An assistant row's other fields (model, tokens,
+ * ...) are left out so that, for example, a model name does not match every
+ * session that used it.
+ */
+const DOCUMENTS = `
+  doc AS (
+    SELECT session_id, message_id || ':' || ordinal AS part_id, data, time_created
+    FROM session_part
+    UNION ALL
+    SELECT
+      session_id,
+      id AS part_id,
+      CASE
+        WHEN type = 'user' THEN data
+        WHEN json_valid(data) THEN
+          NULLIF(
+            COALESCE(json_extract(data, '$.content'), '') || ' ' ||
+              COALESCE(json_extract(data, '$.snapshot.files'), ''),
+            ' '
+          )
+      END AS data,
+      time_created
+    FROM session_message
+    WHERE type IN ('user', 'assistant')
+  )`;
+
 export function buildMultitermSql(
   terms: string[],
   projectID: string | null,
@@ -28,7 +58,7 @@ export function buildMultitermSql(
 
   const conditions = terms
     .map((_, i) =>
-      `MAX(CASE WHEN p.data LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`
+      `MAX(CASE WHEN d.data LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`
     )
     .join(", ");
 
@@ -39,9 +69,10 @@ export function buildMultitermSql(
   const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
 
   const sql = `
-    SELECT s.id AS session_id, s.title, s.directory, s.time_updated, ${conditions}
-    FROM session s
-    JOIN part p ON p.session_id = s.id
+    WITH ${DOCUMENTS}
+    SELECT s.id AS session_id, COALESCE(s.title, '') AS title, s.directory, s.time_updated, ${conditions}
+    FROM session_v2 s
+    JOIN doc d ON d.session_id = s.id
     WHERE 1=1
       ${projectFilter}
     GROUP BY s.id
@@ -87,28 +118,20 @@ export function searchMultitermSqlite(
   }
 
   const placeholder = rows.map(() => "?").join(",");
-  const sessionBinds: string[] = rows.map((r) => r.session_id);
 
-  const termConditions: string[] = [];
-  const allFollowBinds: string[] = [];
-  for (const term of terms) {
-    const escaped = term.replace(/[%_\\]/g, "\\$&");
-    termConditions.push("(data LIKE ? ESCAPE '\\' OR session_id IN (" + placeholder + "))");
-    allFollowBinds.push(`%${escaped}%`);
-    for (const sid of sessionBinds) {
-      allFollowBinds.push(sid);
-    }
-  }
-
+  // Every document of the matched sessions, oldest first, to pick one excerpt per term.
   const sqlFollow = `
-    SELECT session_id, id AS part_id, data
-    FROM part
-    WHERE ${termConditions.join(" AND ")}
+    WITH ${DOCUMENTS}
+    SELECT session_id, part_id, data
+    FROM doc
+    WHERE session_id IN (${placeholder}) AND data IS NOT NULL
     ORDER BY time_created ASC
   `;
 
   type FollowRow = { session_id: string; part_id: string; data: string };
-  const followRows = db.query(sqlFollow).all(...allFollowBinds) as FollowRow[];
+  const followRows = db
+    .query(sqlFollow)
+    .all(...rows.map((r) => r.session_id)) as FollowRow[];
 
   const termHitsBySession = new Map<string, Map<string, { partID: string; matchType: string; excerpt: string }>>();
 

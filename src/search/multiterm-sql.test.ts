@@ -1,73 +1,56 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import { searchMultitermSqlite, searchMultiterm } from "./multiterm-sql";
+import { createV2Db, addSession, addUser, addAssistant, text, tool } from "../test-fixture";
 
-describe("searchMultitermSqlite (in-memory SQLite, real schema)", () => {
+describe("searchMultitermSqlite (in-memory SQLite, OpenCode 2 schema)", () => {
   let db: Database;
 
   beforeAll(() => {
-    db = new Database(":memory:");
-
-    db.run(`CREATE TABLE project (
-      id TEXT PRIMARY KEY, worktree TEXT NOT NULL, vcs TEXT, name TEXT,
-      time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, sandboxes TEXT NOT NULL
-    )`);
-    db.run(`CREATE TABLE session (
-      id TEXT PRIMARY KEY, project_id TEXT NOT NULL, slug TEXT NOT NULL,
-      directory TEXT NOT NULL, title TEXT NOT NULL, version TEXT NOT NULL,
-      time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
-      FOREIGN KEY (project_id) REFERENCES project(id)
-    )`);
-    db.run(`CREATE TABLE message (
-      id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
-      time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL,
-      FOREIGN KEY (session_id) REFERENCES session(id)
-    )`);
-    db.run(`CREATE TABLE part (
-      id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL,
-      time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL,
-      FOREIGN KEY (message_id) REFERENCES message(id)
-    )`);
-
-    db.run(`INSERT INTO project VALUES ('proj_main', '/mock/main', 'git', 'main', 1774000000000, 1775000000000, '[]')`);
-    db.run(`INSERT INTO project VALUES ('proj_other', '/mock/other', 'git', 'other', 1774000000000, 1776000000000, '[]')`);
+    db = createV2Db();
+    const main = { projectID: "proj_main", directory: "/mock/main" };
 
     // ses_a: text with "truck" only — should NOT match [truck, vertex, gemini]
-    db.run(`INSERT INTO session VALUES ('ses_a', 'proj_main', 'a', '/mock/main', 'Truck overview', 'v1', 1774100000000, 1774100000000)`);
-    db.run(`INSERT INTO message VALUES ('msg_a1', 'ses_a', 1774100000000, 1774100000000, '{"role":"assistant","agent":"build"}')`);
-    db.run(`INSERT INTO part VALUES ('part_a1', 'msg_a1', 'ses_a', 1774100000000, 1774100000000, '{"type":"text","text":"we trained truck model on data"}')`);
+    addSession(db, { ...main, id: "ses_a", title: "Truck overview", created: 1774100000000 });
+    addAssistant(db, { id: "msg_a1", sessionID: "ses_a", time: 1774100000000, parts: [text("we trained truck model on data")] });
 
-    // ses_b: cross-part match — all 3 terms across 3 different parts
-    db.run(`INSERT INTO session VALUES ('ses_b', 'proj_main', 'b', '/mock/main', 'Vertex Gemini fine-tune', 'v1', 1774200000000, 1774200000000)`);
-    db.run(`INSERT INTO message VALUES ('msg_b1', 'ses_b', 1774200000000, 1774200000000, '{"role":"user","agent":"user"}')`);
-    db.run(`INSERT INTO part VALUES ('part_b1', 'msg_b1', 'ses_b', 1774200000000, 1774200000000, '{"type":"text","text":"please use vertex ai"}')`);
-    db.run(`INSERT INTO message VALUES ('msg_b2', 'ses_b', 1774200001000, 1774200001000, '{"role":"assistant","agent":"build"}')`);
-    db.run(`INSERT INTO part VALUES ('part_b2', 'msg_b2', 'ses_b', 1774200001000, 1774200001000, '{"type":"tool","tool":"bash","state":{"input":{"cmd":"tune"},"output":"gemini-2.5-flash ready"}}')`);
-    db.run(`INSERT INTO part VALUES ('part_b3', 'msg_b2', 'ses_b', 1774200002000, 1774200002000, '{"type":"patch","files":["src/NonTruckExamples/x.ts","src/Other.ts"]}')`);
+    // ses_b: cross-document match — user prompt, tool output, and modified file names
+    addSession(db, { ...main, id: "ses_b", title: "Vertex Gemini fine-tune", created: 1774200000000 });
+    addUser(db, { id: "msg_b1", sessionID: "ses_b", time: 1774200000000, text: "please use vertex ai" });
+    addAssistant(db, {
+      id: "msg_b2", sessionID: "ses_b", time: 1774200001000,
+      parts: [tool("shell", { command: "tune" }, "gemini-2.5-flash ready")],
+      files: ["src/NonTruckExamples/x.ts", "src/Other.ts"],
+    });
 
-    // ses_c: title has "Truck Vertex" but no part has "gemini"
-    db.run(`INSERT INTO session VALUES ('ses_c', 'proj_main', 'c', '/mock/main', 'Truck Vertex plan', 'v1', 1774300000000, 1774300000000)`);
-    db.run(`INSERT INTO message VALUES ('msg_c1', 'ses_c', 1774300000000, 1774300000000, '{"role":"user","agent":"user"}')`);
-    db.run(`INSERT INTO part VALUES ('part_c1', 'msg_c1', 'ses_c', 1774300000000, 1774300000000, '{"type":"text","text":"some notes"}')`);
+    // ses_c: title has "Truck Vertex" but no document has "gemini"
+    addSession(db, { ...main, id: "ses_c", title: "Truck Vertex plan", created: 1774300000000 });
+    addUser(db, { id: "msg_c1", sessionID: "ses_c", time: 1774300000000, text: "some notes" });
 
     // ses_d: one part with all 3 terms
-    db.run(`INSERT INTO session VALUES ('ses_d', 'proj_main', 'd', '/mock/main', 'Seed data', 'v1', 1774400000000, 1774400000000)`);
-    db.run(`INSERT INTO message VALUES ('msg_d1', 'ses_d', 1774400000000, 1774400000000, '{"role":"assistant","agent":"build"}')`);
-    db.run(`INSERT INTO part VALUES ('part_d1', 'msg_d1', 'ses_d', 1774400000000, 1774400000000, '{"type":"tool","tool":"write","state":{"output":"TRUCK Vertex GEMINI all in one"}}')`);
+    addSession(db, { ...main, id: "ses_d", title: "Seed data", created: 1774400000000 });
+    addAssistant(db, {
+      id: "msg_d1", sessionID: "ses_d", time: 1774400000000,
+      parts: [tool("write", { path: "seed.txt" }, "TRUCK Vertex GEMINI all in one")],
+    });
 
     // ses_e: different project, has "truck" — used for project scoping tests
-    db.run(`INSERT INTO session VALUES ('ses_e', 'proj_other', 'e', '/mock/other', 'Other proj truck', 'v1', 1774500000000, 1774500000000)`);
-    db.run(`INSERT INTO message VALUES ('msg_e1', 'ses_e', 1774500000000, 1774500000000, '{"role":"user","agent":"user"}')`);
-    db.run(`INSERT INTO part VALUES ('part_e1', 'msg_e1', 'ses_e', 1774500000000, 1774500000000, '{"type":"text","text":"truck reference here"}')`);
+    addSession(db, { projectID: "proj_other", directory: "/mock/other", id: "ses_e", title: "Other proj truck", created: 1774500000000 });
+    addUser(db, { id: "msg_e1", sessionID: "ses_e", time: 1774500000000, text: "truck reference here" });
 
     // ses_f: empty session — no messages
-    db.run(`INSERT INTO session VALUES ('ses_f', 'proj_main', 'f', '/mock/main', 'Empty session', 'v1', 1774600000000, 1774600000000)`);
+    addSession(db, { ...main, id: "ses_f", title: "Empty session", created: 1774600000000 });
 
     // ses_g: session with a malformed part
-    db.run(`INSERT INTO session VALUES ('ses_g', 'proj_main', 'g', '/mock/main', 'Malformed test', 'v1', 1774700000000, 1774700000000)`);
-    db.run(`INSERT INTO message VALUES ('msg_g1', 'ses_g', 1774700000000, 1774700000000, '{"role":"assistant","agent":"build"}')`);
-    db.run(`INSERT INTO part VALUES ('part_g1', 'msg_g1', 'ses_g', 1774700000000, 1774700000000, '{not valid json truck}')`);
-    db.run(`INSERT INTO part VALUES ('part_g2', 'msg_g1', 'ses_g', 1774700001000, 1774700001000, '{"type":"text","text":"valid truck here"}')`);
+    addSession(db, { ...main, id: "ses_g", title: "Malformed test", created: 1774700000000 });
+    addAssistant(db, {
+      id: "msg_g1", sessionID: "ses_g", time: 1774700000000,
+      parts: ["{not valid json truck}", text("valid truck here")],
+    });
+
+    // ses_h: assistant content stored inline by early 2.x releases
+    addSession(db, { ...main, id: "ses_h", title: null, created: 1774800000000 });
+    addAssistant(db, { id: "msg_h1", sessionID: "ses_h", time: 1774800000000, inline: [text("inline zeppelin notes")] });
   });
 
   afterAll(() => {
@@ -185,6 +168,17 @@ describe("searchMultitermSqlite (in-memory SQLite, real schema)", () => {
     expect(r).toHaveProperty("timestamp");
     expect(r).toHaveProperty("projectDirectory");
     expect(r).toHaveProperty("termHits");
+  });
+
+  test("finds assistant content stored inline by early 2.x releases", () => {
+    const results = searchMultitermSqlite(db, "proj_main", ["zeppelin", "inline"]);
+    expect(results.map((r) => r.sessionID)).toEqual(["ses_h"]);
+    expect(results[0]!.sessionTitle).toBe("");
+  });
+
+  test("does not match an assistant message's model name", () => {
+    const results = searchMultitermSqlite(db, "proj_main", ["claude-sonnet"]);
+    expect(results).toHaveLength(0);
   });
 
   test("async wrapper searchMultiterm is exported", () => {
