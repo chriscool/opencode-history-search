@@ -19,12 +19,15 @@ function legacyFiles(): string[] {
     .filter((file) => existsSync(file));
 }
 
-/** True if the global config also loads the plugin, which would register it twice. */
-function configuredInConfig(): boolean {
-  return ["opencode.json", "opencode.jsonc"].some((name) => {
-    const file = join(configDir(), name);
-    return existsSync(file) && readFileSync(file, "utf8").includes("opencode-history-search");
-  });
+/**
+ * A global config file that mentions the plugin, which may mean it already
+ * loads it and the tool would be registered twice. Only a hint: a comment in
+ * opencode.jsonc can mention it too.
+ */
+function configMentioningPlugin(): string | undefined {
+  return ["opencode.json", "opencode.jsonc"]
+    .map((name) => join(configDir(), name))
+    .find((file) => existsSync(file) && readFileSync(file, "utf8").includes("opencode-history-search"));
 }
 
 function install() {
@@ -48,10 +51,11 @@ function install() {
     process.exit(1);
   }
 
-  if (configuredInConfig()) {
+  const config = configMentioningPlugin();
+  if (config) {
     console.log(
-      `\n⚠️  ${configDir()}/opencode.json also lists opencode-history-search.` +
-        "\n   Keep only one of the two, or the tool is registered twice.",
+      `\n⚠️  ${config} mentions opencode-history-search.` +
+        "\n   If it loads the plugin, keep only one of the two, or the tool is registered twice.",
     );
   }
 
