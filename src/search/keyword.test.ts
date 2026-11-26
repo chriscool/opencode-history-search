@@ -13,8 +13,6 @@ describe("keyword search (unit tests with mocks)", () => {
       listSessions: mockListSessions,
       listMessages: mockListMessages,
       listParts: mockListParts,
-      getStorageDir: async () => "/mock/storage",
-      getCurrentProjectID: async () => MOCK_PROJECT_ID,
     }));
   });
 

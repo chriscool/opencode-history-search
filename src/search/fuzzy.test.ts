@@ -19,8 +19,6 @@ describe("fuzzy search (unit tests with mocks)", () => {
         partsRead.push(messageID);
         return mockListParts(messageID);
       },
-      getStorageDir: async () => "/mock/storage",
-      getCurrentProjectID: async () => MOCK_PROJECT_ID,
     }));
   });
 
